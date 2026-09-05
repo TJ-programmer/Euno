@@ -1,6 +1,6 @@
-# E — a curiosity engine
+# Euno — a curiosity engine
 
-E is a mobile product built around curiosity, discovery, understanding, and connection. It is not a learning app, productivity app, or social feed: a few seconds of attention become a small piece of understanding, which creates a natural desire to discover something else.
+Euno is a mobile product built around curiosity, discovery, understanding, and connection. It is not a learning app, productivity app, or social feed: a few seconds of attention become a small piece of understanding, which creates a natural desire to discover something else.
 
 > Quiet interface. Strong content. Intelligent motion.
 
