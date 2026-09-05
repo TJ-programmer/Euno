@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useMemo } from "react";
 import { StyleSheet, Text, Pressable, ScrollView } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
@@ -12,18 +12,30 @@ import Animated, {
 import { CuriosityTopics } from "../../components/onboarding/CuriosityTopics";
 import { OnboardingProgress } from "../../components/onboarding/OnboardingProgress";
 import { useTheme } from "@/hooks/use-theme";
+import { useOnboarding } from "@/contexts/onboarding";
+
+const MIN_SELECTIONS = 3;
 
 export default function CuriosityScreen() {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
-  const [selectedTopics, setSelectedTopics] = useState<string[]>([]);
+  const { interests: selectedTopics, setInterests: setSelectedTopics } =
+    useOnboarding();
   const ctaScale = useSharedValue(1);
-  const ctaOpacity = useSharedValue(0.5);
+  const ctaOpacity = useSharedValue(0.45);
 
-  const hasSelection = useMemo(
-    () => selectedTopics.length > 0,
-    [selectedTopics]
-  );
+  const count = selectedTopics.length;
+  const canContinue = count >= MIN_SELECTIONS;
+
+  const subtext = useMemo(() => {
+    if (count === 0) {
+      return "Pick anything that pulls you — at least 3 to begin.";
+    }
+    if (count < MIN_SELECTIONS) {
+      return `Pick ${MIN_SELECTIONS - count} more to begin — this is about what lights you up.`;
+    }
+    return `${count} selected — lovely range. Keep going whenever it feels right.`;
+  }, [count]);
 
   const handleToggleTopic = useCallback(
     (topicId: string): void => {
@@ -38,11 +50,11 @@ export default function CuriosityScreen() {
           : [...current, topicId]
       );
 
-      ctaOpacity.value = withTiming(nextCount > 0 ? 1 : 0.5, {
+      ctaOpacity.value = withTiming(nextCount >= MIN_SELECTIONS ? 1 : 0.45, {
         duration: 200,
       });
     },
-    [selectedTopics, ctaOpacity]
+    [selectedTopics, ctaOpacity, setSelectedTopics]
   );
 
   const ctaAnimatedStyle = useAnimatedStyle(() => ({
@@ -59,7 +71,20 @@ export default function CuriosityScreen() {
   };
 
   const handleKeepGoing = (): void => {
-    router.push("/(onboarding)/goals");
+    const responses = [
+      "Great choices.",
+      "Love the mix.",
+      "Interesting combination.",
+    ];
+    const message = responses[count % responses.length];
+    router.push({
+      pathname: "/(onboarding)/moment",
+      params: {
+        message,
+        subtext: `${count} topics noted — a lovely start.`,
+        next: "/(onboarding)/goals",
+      },
+    });
   };
 
   return (
@@ -72,11 +97,7 @@ export default function CuriosityScreen() {
           <OnboardingProgress position={1} total={4} />
           <Text style={styles.eyebrow}>Your interests</Text>
           <Text style={styles.question}>What are you curious about?</Text>
-          <Text style={styles.subtext}>
-            {selectedTopics.length > 0
-              ? `${selectedTopics.length} selected — pick more or keep going.`
-              : "Pick as many as you like."}
-          </Text>
+          <Text style={styles.subtext}>{subtext}</Text>
         </Animated.View>
 
         <Animated.View entering={FadeInDown.duration(420).delay(80)}>
@@ -96,16 +117,19 @@ export default function CuriosityScreen() {
             onPress={handleKeepGoing}
             onPressIn={handlePressIn}
             onPressOut={handlePressOut}
-            disabled={!hasSelection}
+            disabled={!canContinue}
             accessibilityRole="button"
             accessibilityLabel="Keep going"
-            accessibilityState={{ disabled: !hasSelection }}
-            style={styles.cta}
+            accessibilityState={{ disabled: !canContinue }}
+            style={[styles.cta, canContinue ? styles.ctaReady : styles.ctaMuted]}
           >
-            <Text style={styles.ctaLabel}>
-              {hasSelection
-                ? `Keep going · ${selectedTopics.length}`
-                : "Keep going"}
+            <Text
+              style={[
+                styles.ctaLabel,
+                canContinue ? styles.ctaLabelReady : styles.ctaLabelMuted,
+              ]}
+            >
+              {canContinue ? `Keep going · ${count}` : "Keep going"}
             </Text>
           </Pressable>
         </Animated.View>
@@ -155,19 +179,32 @@ function createStyles(theme: ReturnType<typeof useTheme>) {
     cta: {
       paddingVertical: 16,
       borderRadius: 30,
-      backgroundColor: theme.onboardingAccent,
       alignItems: "center",
+      borderWidth: 1,
+    },
+    ctaMuted: {
+      backgroundColor: theme.onboardingSurface,
+      borderColor: theme.onboardingBorder,
+    },
+    ctaReady: {
+      backgroundColor: theme.onboardingAccent,
+      borderColor: theme.onboardingAccent,
       shadowColor: theme.onboardingAccent,
-      shadowOpacity: 0.22,
-      shadowRadius: 12,
-      shadowOffset: { width: 0, height: 5 },
-      elevation: 5,
+      shadowOpacity: 0.34,
+      shadowRadius: 16,
+      shadowOffset: { width: 0, height: 6 },
+      elevation: 7,
     },
     ctaLabel: {
       fontSize: 16,
       fontWeight: "600",
-      color: theme.onboardingOnAccent,
       letterSpacing: 0.2,
+    },
+    ctaLabelMuted: {
+      color: theme.onboardingTextMuted,
+    },
+    ctaLabelReady: {
+      color: theme.onboardingOnAccent,
     },
   });
 }

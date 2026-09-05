@@ -16,6 +16,19 @@ export type Palette = {
 
 export const PALETTES: Palette[] = [
   {
+    name: "Lavender",
+    colors: {
+      onboardingBackground: "#F3F0F7",
+      onboardingSurface: "#E9E4F0",
+      onboardingBorder: "#D8D0E4",
+      onboardingText: "#252229",
+      onboardingTextMuted: "#6F687E",
+      onboardingAccent: "#81739B",
+      onboardingAccentSoft: "#EAE4F3",
+      onboardingOnAccent: "#FFFFFF",
+    },
+  },
+  {
     name: "Dusty Blue",
     colors: {
       onboardingBackground: "#EEF2F4",

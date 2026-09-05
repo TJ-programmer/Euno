@@ -21,7 +21,7 @@ export type CuriosityTopicsProps = {
   onToggleTopic: (topicId: string) => void;
 };
 
-const TOPICS: CuriosityTopic[] = [
+export const TOPICS: CuriosityTopic[] = [
   { id: "artificial-intelligence", label: "Artificial Intelligence" },
   { id: "technology", label: "Technology" },
   { id: "psychology", label: "Psychology" },
@@ -87,22 +87,25 @@ function TopicChip({
       layout={LinearTransition.duration(220)}
       entering={FadeIn.duration(220)}
       exiting={FadeOut.duration(180)}
-      style={animatedStyle}
     >
-      <Pressable
-        onPress={handlePress}
-        accessibilityRole="button"
-        accessibilityLabel={topic.label}
-        accessibilityState={{ selected }}
-        style={[
-          styles.chip,
-          selected ? styles.chipSelected : styles.chipUnselected,
-        ]}
-      >
-        <Text style={[styles.chipLabel, selected && styles.chipLabelSelected]}>
-          {selected ? `✓  ${topic.label}` : topic.label}
-        </Text>
-      </Pressable>
+      <Animated.View style={animatedStyle}>
+        <Pressable
+          onPress={handlePress}
+          accessibilityRole="button"
+          accessibilityLabel={topic.label}
+          accessibilityState={{ selected }}
+          style={[
+            styles.chip,
+            selected ? styles.chipSelected : styles.chipUnselected,
+          ]}
+        >
+          <Text
+            style={[styles.chipLabel, selected && styles.chipLabelSelected]}
+          >
+            {selected ? `✓  ${topic.label}` : topic.label}
+          </Text>
+        </Pressable>
+        </Animated.View>
     </Animated.View>
   );
 }

@@ -8,27 +8,46 @@ import Animated, {
   useAnimatedStyle,
   withTiming,
   FadeInDown,
+  FadeInUp,
 } from "react-native-reanimated";
 import { OnboardingProgress } from "../../components/onboarding/OnboardingProgress";
 import { useTheme } from "@/hooks/use-theme";
 import { useOnboarding } from "@/contexts/onboarding";
+import type { OnboardingDepth } from "@/contexts/onboarding";
 
-const GOALS: string[] = [
-  "Learn something",
-  "Build something",
-  "Get inspired",
-  "Connect with people",
+type DepthOption = {
+  id: OnboardingDepth;
+  title: string;
+  description: string;
+};
+
+const DEPTH_OPTIONS: DepthOption[] = [
+  {
+    id: "quick",
+    title: "Quick glances",
+    description: "Bite-sized ideas — keep it light.",
+  },
+  {
+    id: "balanced",
+    title: "Balanced",
+    description: "A little spark, a little depth.",
+  },
+  {
+    id: "deep",
+    title: "Deep dives",
+    description: "Take ideas all the way down.",
+  },
 ];
 
-function GoalCard({
-  goal,
+function DepthCard({
+  option,
   selected,
-  onToggle,
+  onSelect,
   theme,
 }: {
-  goal: string;
+  option: DepthOption;
   selected: boolean;
-  onToggle: (goal: string) => void;
+  onSelect: (id: OnboardingDepth) => void;
   theme: ReturnType<typeof useTheme>;
 }): React.JSX.Element {
   const styles = useMemo(() => createCardStyles(theme), [theme]);
@@ -43,34 +62,44 @@ function GoalCard({
     scale.value = withTiming(0.98, { duration: 90 }, () => {
       scale.value = withTiming(1, { duration: 160 });
     });
-    onToggle(goal);
-  }, [goal, onToggle, scale]);
+    onSelect(option.id);
+  }, [option.id, onSelect, scale]);
 
   return (
     <Animated.View entering={FadeInDown.duration(320)}>
       <Animated.View style={animatedStyle}>
         <Pressable
           onPress={handlePress}
-          accessibilityRole="button"
-          accessibilityLabel={goal}
+          accessibilityRole="radio"
+          accessibilityLabel={option.title}
           accessibilityState={{ selected }}
           style={[
             styles.card,
             selected ? styles.cardSelected : styles.cardUnselected,
           ]}
         >
-          <Text style={[styles.cardLabel, selected && styles.cardLabelSelected]}>
-            {goal}
-          </Text>
+          <View style={styles.cardCopy}>
+            <Text
+              style={[styles.cardTitle, selected && styles.cardTitleSelected]}
+            >
+              {option.title}
+            </Text>
+            <Text
+              style={[
+                styles.cardDescription,
+                selected && styles.cardDescriptionSelected,
+              ]}
+            >
+              {option.description}
+            </Text>
+          </View>
           <View
             style={[
               styles.check,
               selected ? styles.checkSelected : styles.checkUnselected,
             ]}
           >
-            {selected && (
-              <Text style={styles.checkMark}>✓</Text>
-            )}
+            {selected && <Text style={styles.checkMark}>✓</Text>}
           </View>
         </Pressable>
       </Animated.View>
@@ -78,27 +107,20 @@ function GoalCard({
   );
 }
 
-export default function GoalsScreen() {
+export default function DepthScreen() {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
-  const { goals: selectedGoals, setGoals: setSelectedGoals } = useOnboarding();
+  const { depth: selectedDepth, setDepth: setSelectedDepth } = useOnboarding();
   const ctaOpacity = useSharedValue(0.45);
 
-  const hasSelection = selectedGoals.length > 0;
+  const hasSelection = selectedDepth !== null;
 
-  const handleToggleGoal = useCallback(
-    (goal: string): void => {
-      setSelectedGoals((current) => {
-        const next = current.includes(goal)
-          ? current.filter((g) => g !== goal)
-          : [...current, goal];
-        ctaOpacity.value = withTiming(next.length > 0 ? 1 : 0.45, {
-          duration: 200,
-        });
-        return next;
-      });
+  const handleSelect = useCallback(
+    (id: OnboardingDepth): void => {
+      setSelectedDepth((current) => (current === id ? null : id));
+      ctaOpacity.value = withTiming(1, { duration: 200 });
     },
-    [ctaOpacity, setSelectedGoals]
+    [ctaOpacity, setSelectedDepth]
   );
 
   const ctaAnimatedStyle = useAnimatedStyle(() => ({
@@ -108,29 +130,34 @@ export default function GoalsScreen() {
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.container}>
-        <View style={styles.header}>
-          <OnboardingProgress position={2} total={4} />
-          <Text style={styles.eyebrow}>Your purpose</Text>
+        <Animated.View entering={FadeInDown.duration(360)}>
+          <OnboardingProgress position={3} total={4} />
+          <Text style={styles.eyebrow}>Your depth</Text>
           <Text style={styles.title}>
-            What do you want{"\n"}
-            more of?
+            How deep do you{"\n"}
+            want to go?
           </Text>
-          <Text style={styles.subtext}>Pick as many as you like.</Text>
-        </View>
+          <Text style={styles.subtext}>
+            Euno matches the room you give yourself.
+          </Text>
+        </Animated.View>
 
         <View style={styles.options}>
-          {GOALS.map((goal) => (
-            <GoalCard
-              key={goal}
-              goal={goal}
-              selected={selectedGoals.includes(goal)}
-              onToggle={handleToggleGoal}
+          {DEPTH_OPTIONS.map((option) => (
+            <DepthCard
+              key={option.id}
+              option={option}
+              selected={selectedDepth === option.id}
+              onSelect={handleSelect}
               theme={theme}
             />
           ))}
         </View>
 
-        <Animated.View style={[styles.buttonWrap, ctaAnimatedStyle]}>
+        <Animated.View
+          style={[styles.buttonWrap, ctaAnimatedStyle]}
+          entering={FadeInUp.duration(380).delay(120)}
+        >
           <Pressable
             style={[
               styles.button,
@@ -144,9 +171,9 @@ export default function GoalsScreen() {
               router.push({
                 pathname: "/(onboarding)/moment",
                 params: {
-                  message: "Got it.",
-                  subtext: "Your purpose is noted — let's set the depth.",
-                  next: "/(onboarding)/depth",
+                  message: "Perfect.",
+                  subtext: "Your curiosity has a shape — let's keep it close.",
+                  next: "/(onboarding)/auth",
                 },
               });
             }}
@@ -178,9 +205,6 @@ function createStyles(theme: ReturnType<typeof useTheme>) {
       paddingTop: 40,
       paddingBottom: 32,
     },
-    header: {
-      marginBottom: 36,
-    },
     eyebrow: {
       fontSize: 13,
       fontWeight: "600",
@@ -201,12 +225,14 @@ function createStyles(theme: ReturnType<typeof useTheme>) {
       fontSize: 15,
       lineHeight: 20,
       color: theme.onboardingTextMuted,
+      marginBottom: 32,
     },
     options: {
       gap: 12,
     },
     buttonWrap: {
       marginTop: "auto",
+      paddingTop: 24,
     },
     button: {
       paddingVertical: 17,
@@ -260,13 +286,27 @@ function createCardStyles(theme: ReturnType<typeof useTheme>) {
       backgroundColor: theme.onboardingAccent,
       borderColor: theme.onboardingAccent,
     },
-    cardLabel: {
+    cardCopy: {
+      flex: 1,
+      paddingRight: 16,
+    },
+    cardTitle: {
       fontSize: 16,
       fontWeight: "600",
       color: theme.onboardingText,
+      marginBottom: 3,
     },
-    cardLabelSelected: {
+    cardTitleSelected: {
       color: theme.onboardingOnAccent,
+    },
+    cardDescription: {
+      fontSize: 13,
+      lineHeight: 18,
+      color: theme.onboardingTextMuted,
+    },
+    cardDescriptionSelected: {
+      color: theme.onboardingOnAccent,
+      opacity: 0.85,
     },
     check: {
       width: 26,

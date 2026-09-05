@@ -209,7 +209,7 @@ function createStyles(theme: ReturnType<typeof useTheme>) {
       fontWeight: "600",
       letterSpacing: 1.2,
       textTransform: "uppercase",
-      color: theme.onboardingTextMuted,
+      color: theme.onboardingAccent,
     },
     headline: {
       fontSize: 40,
