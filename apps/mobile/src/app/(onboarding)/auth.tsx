@@ -24,7 +24,7 @@ import { TOPICS } from "../../components/onboarding/CuriosityTopics";
 import { useTheme } from "@/hooks/use-theme";
 import { useOnboarding } from "@/contexts/onboarding";
 import type { OnboardingDepth } from "@/contexts/onboarding";
-
+import { AntDesign } from "@expo/vector-icons";
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const DEPTH_LABELS: Record<OnboardingDepth, string> = {
@@ -45,7 +45,7 @@ export default function AuthScreen() {
   const emailRef = useRef<TextInput>(null);
   const checkScale = useSharedValue(0.5);
   const checkOpacity = useSharedValue(0);
-
+  const [googleStatus, setGoogleStatus] = useState<SaveStatus>("idle");
   const emailValid = EMAIL_PATTERN.test(email);
   const canSave = status === "idle" && emailValid;
 
@@ -80,6 +80,21 @@ export default function AuthScreen() {
       ).catch(() => {});
     }, 900);
   }, [canSave, checkOpacity, checkScale]);
+
+  const handleGoogleSignIn = useCallback((): void => {
+  	if (googleStatus !== "idle") return;
+  	setGoogleStatus("saving");
+  	Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+  // Real Google OAuth (Supabase) wiring comes later — mirrors handleSave's
+  // placeholder pattern for now.
+  	setTimeout(() => {
+    		setStatus("saved");
+    		setGoogleStatus("saved");
+    		checkScale.value = withSpring(1, { damping: 14, stiffness: 190 });
+    		checkOpacity.value = withTiming(1, { duration: 240 });
+    		Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+	  }, 900);
+	}, [googleStatus, checkOpacity, checkScale]);
 
   const checkStyle = useAnimatedStyle(() => ({
     opacity: checkOpacity.value,
@@ -170,6 +185,27 @@ export default function AuthScreen() {
                   Private to you. No newsletters, no noise — this just keeps
                   your curiosity saved.
                 </Text>
+		  <View style={styles.divider}>
+  			<View style={styles.dividerLine} />
+  			<Text style={styles.dividerText}>or</Text>
+  			<View style={styles.dividerLine} />
+		</View>
+
+		<Pressable
+  			style={[
+    				styles.googleButton,
+    				googleStatus !== "idle" && styles.googleButtonDisabled,
+  			]}
+  		disabled={googleStatus !== "idle"}
+  		onPress={handleGoogleSignIn}
+  		accessibilityRole="button"
+  		accessibilityLabel="Continue with Google"
+		>
+  		<AntDesign name="google" size={18} color={theme.onboardingText} />
+  		<Text style={styles.googleButtonText}>
+    			{googleStatus === "saving" ? "Connecting…" : "Continue with Google"}
+  		</Text>
+	</Pressable>
               </Animated.View>
             </>
           ) : (
@@ -322,6 +358,44 @@ function createStyles(theme: ReturnType<typeof useTheme>) {
       lineHeight: 18,
       color: theme.onboardingTextMuted,
     },
+    divider: {
+  flexDirection: "row",
+  alignItems: "center",
+  marginTop: 22,
+  marginBottom: 22,
+  gap: 12,
+},
+dividerLine: {
+  flex: 1,
+  height: StyleSheet.hairlineWidth,
+  backgroundColor: theme.onboardingBorder,
+},
+dividerText: {
+  fontSize: 12,
+  fontWeight: "600",
+  letterSpacing: 0.6,
+  textTransform: "uppercase",
+  color: theme.onboardingTextMuted,
+},
+googleButton: {
+  flexDirection: "row",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: 10,
+  paddingVertical: 15,
+  borderRadius: 16,
+  borderWidth: 1,
+  borderColor: theme.onboardingBorder,
+  backgroundColor: theme.onboardingSurface,
+},
+googleButtonDisabled: {
+  opacity: 0.6,
+},
+googleButtonText: {
+  fontSize: 15,
+  fontWeight: "600",
+  color: theme.onboardingText,
+},
     footer: {
       paddingHorizontal: 24,
       paddingBottom: 20,
