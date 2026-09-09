@@ -81,6 +81,8 @@ coverage/
 *.secrets.*
 service-account*.json
 firebase*.json
+.secrets
+
 
 ######################
 # Logs & temp

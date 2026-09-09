@@ -26,6 +26,7 @@ import { useOnboarding } from "@/contexts/onboarding";
 import type { OnboardingDepth } from "@/contexts/onboarding";
 import { AntDesign } from "@expo/vector-icons";
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+import { sendMagicLink } from '@/lib/auth';
 
 const DEPTH_LABELS: Record<OnboardingDepth, string> = {
   quick: "Quick glances",
@@ -65,21 +66,42 @@ export default function AuthScreen() {
     [goals]
   );
 
-  const handleSave = useCallback((): void => {
-    if (!canSave) return;
-    setStatus("saving");
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-    // Real auth (Supabase) wiring comes later — profile creation happens
-    // after authentication. For now the flow ends in a quiet saved state.
-    setTimeout(() => {
-      setStatus("saved");
-      checkScale.value = withSpring(1, { damping: 14, stiffness: 190 });
-      checkOpacity.value = withTiming(1, { duration: 240 });
-      Haptics.notificationAsync(
-        Haptics.NotificationFeedbackType.Success
-      ).catch(() => {});
-    }, 900);
-  }, [canSave, checkOpacity, checkScale]);
+  const handleSave = useCallback(async (): Promise<void> => {
+  if (!canSave) return;
+
+  setStatus("saving");
+
+  Haptics.impactAsync(
+    Haptics.ImpactFeedbackStyle.Medium
+  ).catch(() => {});
+
+  try {
+    await sendMagicLink(email);
+
+    setStatus("saved");
+
+    checkScale.value = withSpring(1, {
+      damping: 14,
+      stiffness: 190,
+    });
+
+    checkOpacity.value = withTiming(1, {
+      duration: 240,
+    });
+
+    Haptics.notificationAsync(
+      Haptics.NotificationFeedbackType.Success
+    ).catch(() => {});
+  } catch (error) {
+    console.error("Magic link error:", error);
+
+    setStatus("idle");
+
+    Haptics.notificationAsync(
+      Haptics.NotificationFeedbackType.Error
+    ).catch(() => {});
+  }
+}, [canSave, email, checkOpacity, checkScale]);
 
   const handleGoogleSignIn = useCallback((): void => {
   	if (googleStatus !== "idle") return;
@@ -216,11 +238,11 @@ export default function AuthScreen() {
               <Animated.View style={[styles.checkCircle, checkStyle]}>
                 <Text style={styles.checkMark}>✓</Text>
               </Animated.View>
-              <Text style={styles.savedTitle}>Saved.</Text>
-              <Text style={styles.savedText}>
-                Your curiosity is kept close. Your first discovery is on its
-                way.
-              </Text>
+              <Text style={styles.savedTitle}>Check your email.</Text>
+
+		<Text style={styles.savedText}>
+  			We sent a magic link to {email}. Tap it to continue with Euno.
+		</Text>
             </Animated.View>
           )}
         </ScrollView>
@@ -238,7 +260,7 @@ export default function AuthScreen() {
               disabled={!canSave}
               onPress={handleSave}
               accessibilityRole="button"
-              accessibilityLabel="Save my curiosity"
+              accessibilityLabel="Continue with email"
               accessibilityState={{ disabled: !canSave }}
             >
               <Text
@@ -247,8 +269,8 @@ export default function AuthScreen() {
                   canSave ? styles.buttonTextReady : styles.buttonTextMuted,
                 ]}
               >
-                {status === "saving" ? "Saving…" : "Save my curiosity"}
-              </Text>
+                {status === "saving" ? "Sending…" : "Continue with email"}       
+		</Text>
             </Pressable>
           </Animated.View>
         )}
