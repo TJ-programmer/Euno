@@ -1,32 +1,57 @@
-import { useEffect } from 'react';
-import { ActivityIndicator, View } from 'react-native';
-import { useLocalSearchParams, router } from 'expo-router';
+import { useEffect, useState } from 'react';
+import { ActivityIndicator, Text, View } from 'react-native';
+import * as Linking from 'expo-linking';
 
 import { supabase } from '@/lib/supabase';
 
 export default function AuthCallbackScreen() {
-  const { code } = useLocalSearchParams<{ code?: string }>();
+  const [message, setMessage] = useState('Signing you in…');
 
   useEffect(() => {
-    async function handleCallback() {
-      if (!code) {
-        router.replace('/auth');
+    const handleUrl = async (url: string) => {
+      console.log('AUTH CALLBACK URL:', url);
+
+      const parsed = Linking.parse(url);
+
+      console.log('AUTH CALLBACK PARAMS:', parsed.queryParams);
+
+      const code = parsed.queryParams?.code;
+
+      if (typeof code !== 'string') {
+        setMessage('No authentication code found.');
         return;
       }
 
-      const { error } = await supabase.auth.exchangeCodeForSession(code);
+      const { error } =
+        await supabase.auth.exchangeCodeForSession(code);
 
       if (error) {
         console.error('Auth callback error:', error);
-        router.replace('/auth');
+        setMessage(`Authentication failed: ${error.message}`);
         return;
       }
 
-      router.replace('/');
-    }
+      console.log('AUTH SUCCESS');
+      setMessage('You are signed in!');
+    };
 
-    handleCallback();
-  }, [code]);
+    const subscription = Linking.addEventListener(
+      'url',
+      ({ url }) => {
+        handleUrl(url);
+      }
+    );
+
+    Linking.getInitialURL().then((url) => {
+      if (url) {
+        handleUrl(url);
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, []);
 
   return (
     <View
@@ -34,9 +59,14 @@ export default function AuthCallbackScreen() {
         flex: 1,
         alignItems: 'center',
         justifyContent: 'center',
+        padding: 24,
       }}
     >
       <ActivityIndicator />
+
+      <Text style={{ marginTop: 16 }}>
+        {message}
+      </Text>
     </View>
   );
 }
