@@ -22,10 +22,11 @@ export const supabase = createClient(
   supabaseAnonKey,
   {
     auth: {
-      ...(storage ? { storage } : {}),
-      autoRefreshToken: true,
-      persistSession: true,
-      detectSessionInUrl: false,
-    },
+  	...(storage ? { storage } : {}),
+  	autoRefreshToken: true,
+  	persistSession: true,
+  	detectSessionInUrl: false,
+  	flowType: 'pkce',
+	},
   }
 );
