@@ -84,6 +84,19 @@ interesting
 
 Keep the number of claims small and meaningful.
 
+CLAIM EVIDENCE RULES:
+
+- Every claim must be supported by at least one supplied source.
+- For every claim, provide a short source_quote copied VERBATIM from the
+  supplied source material.
+- source_quote must be an exact contiguous passage from the source.
+- Do not paraphrase the source_quote.
+- Do not rewrite, summarize, or modify the source_quote.
+- Do not invent quotations.
+- The source_quote must appear character-for-character in the supplied
+  source content, except for normal whitespace differences.
+- If the supplied sources do not support a claim, do not make the claim.
+- source_ids must contain only IDs from the supplied sources.
 CONTENT QUALITY
 
 A strong canonical object should allow another model to create

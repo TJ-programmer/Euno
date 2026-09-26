@@ -6,6 +6,9 @@ class Settings(BaseSettings):
     gemini_api_key: str | None = None
     nvidia_api_key: str | None = None
 
+    supabase_url: str
+    supabase_service_role_key: sts
+
     groq_model: str = "openai/gpt-oss-120b"
     gemini_model: str = "gemini-2.5-flash"
     nvidia_model: str = "deepseek-ai/deepseek-v4-flash"

@@ -1,6 +1,5 @@
 from datetime import datetime
-from typing import Literal
-
+from typing import Literal,Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -15,6 +14,8 @@ class Claim(BaseModel):
         "interesting",
     ]
     source_ids: list[str]
+    source_quote: str | None 
+
     confidence: float | None = Field(
         ge=0,
         le=1,
@@ -133,3 +134,23 @@ class SourceInput(BaseModel):
     published_at: datetime | None = None
 
     content: str
+
+class GroundingRepair(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    claims: list[Claim] | None
+
+    title: str | None
+    core_question: str | None
+    core_idea: str | None
+    context: str | None
+
+    explanation_what: str | None
+    explanation_why: str | None
+    explanation_how: str | None
+
+    deeper_insight: str | None
+    connections: list[Connection] | None
+    remove_connection_indexes: list[int] | None
+
+    takeaway: str | None
