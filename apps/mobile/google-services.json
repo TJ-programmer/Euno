@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "728454991629",
+    "project_id": "euno-c4066",
+    "storage_bucket": "euno-c4066.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:728454991629:android:1675c4d545eb658e416a44",
+        "android_client_info": {
+          "package_name": "com.euno.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyANbPCYViRhuI7nywgYPL2c8T0ZgqL1AHw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

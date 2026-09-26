@@ -34,13 +34,17 @@ const DEPTH_LABELS: Record<OnboardingDepth, string> = {
   deep: "Deep dives",
 };
 
-type SaveStatus = "idle" | "saving" | "saved";
+type SaveStatus = "idle" | "saving" | "sent" | "queued";
 
 export default function AuthScreen() {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const { interests, goals, depth } = useOnboarding();
-
+  console.log("ONBOARDING STATE:", {
+  	interests,
+  	goals,
+  	depth,
+  });
   const [email, setEmail] = useState("");
   const [status, setStatus] = useState<SaveStatus>("idle");
   const emailRef = useRef<TextInput>(null);
@@ -76,9 +80,9 @@ export default function AuthScreen() {
   ).catch(() => {});
 
   try {
-    await sendMagicLink(email);
+    const result = await sendMagicLink(email);
 
-    setStatus("saved");
+    setStatus(result.status === "queued" ? "queued" : "sent");
 
     checkScale.value = withSpring(1, {
       damping: 14,
@@ -103,6 +107,7 @@ export default function AuthScreen() {
   }
 }, [canSave, email, checkOpacity, checkScale]);
 
+
   const handleGoogleSignIn = useCallback((): void => {
   	if (googleStatus !== "idle") return;
   	setGoogleStatus("saving");
@@ -123,7 +128,8 @@ export default function AuthScreen() {
     transform: [{ scale: checkScale.value }],
   }));
 
-  const saved = status === "saved";
+  const saved = status === "sent" || status === "queued";
+  const queued = status === "queued";  
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -238,12 +244,16 @@ export default function AuthScreen() {
               <Animated.View style={[styles.checkCircle, checkStyle]}>
                 <Text style={styles.checkMark}>✓</Text>
               </Animated.View>
-              <Text style={styles.savedTitle}>Check your email.</Text>
+              <Text style={styles.savedTitle}>
+  		{queued ? "You're in the queue." : "Check your email."}
+		</Text>
 
 		<Text style={styles.savedText}>
-  			We sent a magic link to {email}. Tap it to continue with Euno.
-		</Text>
-            </Animated.View>
+  		{queued
+    			? `Your magic link is queued. We'll send it to ${email} as soon as it's ready.`
+    			: `We sent a magic link to ${email}. Tap it to continue with Euno.`}
+		</Text>            
+	       </Animated.View>
           )}
         </ScrollView>
 
