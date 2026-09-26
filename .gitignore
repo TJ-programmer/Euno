@@ -1,7 +1,5 @@
 ######################
-
 # Node / package managers
-
 ######################
 
 # Dependencies
@@ -27,9 +25,7 @@ npm-debug.log*
 lerna-debug.log*
 
 ######################
-
 # Expo / React Native
-
 ######################
 
 # Expo cache and generated types
@@ -71,9 +67,7 @@ apps/mobile/android/
 apps/mobile/ios/
 
 ######################
-
 # Build outputs
-
 ######################
 
 build/
@@ -83,9 +77,7 @@ coverage/
 *.tsbuildinfo
 
 ######################
-
 # Environment & secrets
-
 ######################
 
 # Local env files (keep .env.example tracked)
@@ -107,12 +99,11 @@ env/
 *.secrets.*
 service-account*.json
 firebase*.json
+google-services.json
 .secrets
 
 ######################
-
 # Logs & temp
-
 ######################
 
 logs/
@@ -121,9 +112,7 @@ logs/
 *.temp
 
 ######################
-
 # Editors & IDEs
-
 ######################
 
 .vscode/*
@@ -138,9 +127,7 @@ logs/
 *.swo
 
 ######################
-
 # OS
-
 ######################
 
 .DS_Store
@@ -153,9 +140,7 @@ Desktop.ini
 $RECYCLE.BIN/
 
 ######################
-
 # Misc
-
 ######################
 
 *.orig.*
