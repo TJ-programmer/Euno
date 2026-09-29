@@ -1,4 +1,5 @@
-from app.models import CanonicalContent
+
+from app.models import CanonicalContent, HomePresentation
 from app.supabase import supabase
 
 
@@ -83,3 +84,60 @@ class ContentRepository:
                 )
 
         return content_id
+
+    def get_content_database_id(
+        self,
+        content: CanonicalContent,
+    ) -> str:
+        result = (
+            supabase
+            .table("content_items")
+            .select("id")
+            .eq("slug", content.slug)
+            .single()
+            .execute()
+        )
+
+        if not result.data:
+            raise RuntimeError(
+                f"Persisted canonical content not found: "
+                f"{content.slug}"
+            )
+
+        return result.data["id"]
+
+    def save_home_presentation(
+        self,
+        content: CanonicalContent,
+        presentation: HomePresentation,
+    ) -> str:
+        database_content_id = self.get_content_database_id(
+            content
+        )
+
+        row = {
+            "content_id": database_content_id,
+            "surface": "home",
+            "label": presentation.label,
+            "display_title": presentation.display_title,
+            "display_summary": presentation.display_summary,
+           "payload": presentation.payload.model_dump(mode="json"),
+           }
+
+        result = (
+            supabase
+            .table("content_presentations")
+            .upsert(
+                row,
+                on_conflict="content_id,surface",
+            )
+            .execute()
+        )
+
+        if not result.data:
+            raise RuntimeError(
+                "Failed to persist Home presentation."
+            )
+
+        return result.data[0]["id"]
+

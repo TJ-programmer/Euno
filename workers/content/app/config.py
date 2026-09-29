@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     nvidia_api_key: str | None = None
 
     supabase_url: str
-    supabase_service_role_key: sts
+    supabase_service_role_key: str
 
     groq_model: str = "openai/gpt-oss-120b"
     gemini_model: str = "gemini-2.5-flash"

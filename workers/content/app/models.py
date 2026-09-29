@@ -154,3 +154,15 @@ class GroundingRepair(BaseModel):
     remove_connection_indexes: list[int] | None
 
     takeaway: str | None
+
+class EmptyPayload(BaseModel): 
+    model_config = ConfigDict(extra="forbid")
+
+class HomePresentation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    content_id: str
+    label: str
+    display_title: str
+    display_summary: str
+    payload: EmptyPayload
