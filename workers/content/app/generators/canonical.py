@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from typing import Literal
 
 from app.llm.orchestrator import LLMOrchestrator
 from app.models import (
@@ -15,6 +16,11 @@ from app.validation.laya_grounding import LayaGroundingJudge
 GENERATOR_VERSION = "canonical-v1"
 MAX_GENERATION_ATTEMPTS = 2
 
+GenerationMode = Literal[
+    "grounded",
+    "knowledge",
+]
+
 
 class CanonicalGenerator:
     def __init__(
@@ -24,10 +30,14 @@ class CanonicalGenerator:
         repository: ContentRepository | None = None,
     ):
         self.llm = llm or LLMOrchestrator()
+
         self.grounding_judge = (
             grounding_judge or LayaGroundingJudge()
         )
-        self.repository = repository or ContentRepository()
+
+        self.repository = (
+            repository or ContentRepository()
+        )
 
     # ------------------------------------------------------------------
     # SOURCE CONTEXT
@@ -70,7 +80,8 @@ CONTENT:
             raise ValueError(
                 "Canonical content contains unknown topic IDs: "
                 f"{sorted(unknown_topics)}. "
-                f"Allowed topic IDs: {sorted(allowed_topic_set)}"
+                f"Allowed topic IDs: "
+                f"{sorted(allowed_topic_set)}"
             )
 
     # ------------------------------------------------------------------
@@ -83,8 +94,10 @@ CONTENT:
         topic: str,
         content_type: str,
         difficulty: str,
-        source_context: str,
         allowed_topics: list[str],
+        mode: GenerationMode,
+        source_context: str | None = None,
+        direction: str | None = None,
     ) -> str:
 
         topic_list = "\n".join(
@@ -92,14 +105,174 @@ CONTENT:
             for topic_id in allowed_topics
         )
 
+        direction_block = (
+            f"\nDIRECTION:\n{direction}\n"
+            if direction
+            else ""
+        )
+
+        # --------------------------------------------------------------
+        # KNOWLEDGE MODE
+        # --------------------------------------------------------------
+
+        if mode == "knowledge":
+            return f"""
+{CANONICAL_SYSTEM_PROMPT}
+
+Generate one canonical Euno knowledge object.
+
+GENERATION MODE
+---------------
+
+KNOWLEDGE MODE
+
+No external source material is being supplied for this
+generation.
+
+Generate the content from the model's existing knowledge.
+
+This content will be treated as an internally generated
+knowledge object rather than externally source-grounded
+content.
+
+TOPIC:
+{topic}
+{direction_block}
+CONTENT TYPE:
+{content_type}
+
+DIFFICULTY:
+{difficulty}
+
+VALID EUNO TOPIC IDS
+--------------------
+
+The `topics` field must contain ONLY topic IDs from this list:
+
+{topic_list}
+
+STRICT TOPIC RULES
+------------------
+
+- `topics` must contain only IDs from the VALID EUNO TOPIC IDS list.
+- Do not invent new topic IDs.
+- Do not create a topic from the user's natural-language topic.
+- Do not use arbitrary concepts as topic IDs.
+- Do not use article categories as topic IDs.
+- If multiple topic IDs are relevant, select only relevant IDs
+  from the provided list.
+
+KNOWLEDGE GENERATION RULES
+--------------------------
+
+- Focus tightly on the supplied topic.
+- Choose one central idea.
+- Do not turn this into a list of unrelated facts.
+- Prefer well-established knowledge.
+- Avoid obscure claims that require precise sourcing.
+- Avoid exact statistics unless highly reliable.
+- Avoid claims about current events unless they are necessary
+  and stable.
+- Do not fabricate citations.
+- Do not fabricate sources.
+- Do not fabricate source quotes.
+- Do not pretend that model knowledge is externally verified.
+
+SOURCE FIELDS
+-------------
+
+Because no external sources were supplied:
+
+- `sources` MUST be an empty list.
+- Every claim's `source_ids` MUST be an empty list.
+- Every claim's `source_quote` MUST be null.
+
+The absence of external sources must not be represented by
+fake SourceInput or Source objects.
+
+EXPLANATION
+-----------
+
+Every factual assertion should be conservative and accurate.
+
+If a mechanism is uncertain or depends on specialized evidence,
+prefer a simpler well-established explanation.
+
+Do not manufacture precision.
+
+DEEPER INSIGHT
+--------------
+
+- `deeper_insight` is optional.
+- Only provide it when it follows naturally from well-established
+  knowledge.
+- Do not make speculative behavioral, psychological, medical,
+  financial, or scientific claims.
+- Do not invent practical applications.
+
+CONNECTIONS
+-----------
+
+Connections are optional.
+
+Only include genuinely useful connections.
+
+Do not force a connection merely to make the content longer.
+
+TAKEAWAY
+--------
+
+- Summarize the central idea.
+- Do not introduce a new claim.
+- Do not turn the takeaway into unsupported advice.
+
+CONTENT QUALITY
+---------------
+
+The result should feel like an Euno curiosity object:
+
+- one clear idea
+- intellectually interesting
+- concise
+- understandable
+- surprising where appropriate
+- useful to remember
+- capable of naturally leading to deeper curiosity
+
+Return ONLY the requested structured object.
+"""
+
+        # --------------------------------------------------------------
+        # GROUNDED MODE
+        # --------------------------------------------------------------
+
+        if mode != "grounded":
+            raise ValueError(
+                f"Unsupported canonical generation mode: {mode}"
+            )
+
+        if not source_context:
+            raise ValueError(
+                "Grounded canonical generation requires "
+                "source context."
+            )
+
         return f"""
 {CANONICAL_SYSTEM_PROMPT}
 
 Generate one canonical Euno knowledge object.
 
+GENERATION MODE
+---------------
+
+SOURCE-GROUNDED MODE
+
+All factual claims must be supported by the supplied
+source material.
+
 TOPIC:
 {topic}
-
+{direction_block}
 CONTENT TYPE:
 {content_type}
 
@@ -180,27 +353,8 @@ that conclusion.
 However, do not construct a new causal explanation connecting
 independently sourced facts.
 
-Example:
-
-Source A:
-"Caffeine has a mild diuretic effect."
-
-Source B:
-"Coffee contributes to overall fluid intake."
-
-If Source B explicitly states:
-"Moderate coffee consumption does not necessarily cause dehydration."
-
-you may use that conclusion.
-
-But do NOT rewrite the evidence as:
-
-"Caffeine increases urine output, while the water in coffee offsets
-that effect, therefore coffee does not cause dehydration."
-
-unless a supplied source explicitly establishes that mechanism.
-
 Do not infer:
+
 - causality
 - trade-offs
 - offsets
@@ -218,8 +372,6 @@ STRENGTH OF LANGUAGE
 Do not strengthen the certainty, scope, or meaning of source
 statements.
 
-Preserve meaningful qualifiers from the source.
-
 Examples:
 
 - "can" must not become "will"
@@ -229,14 +381,6 @@ Examples:
 - "does not necessarily" must not become "does not"
 - "often" must not become "always"
 - "some" must not become "all"
-
-Do not remove meaningful uncertainty from the source.
-
-If the source says something is possible, do not present it as
-certain.
-
-If the source says something is associated with something else,
-do not present the relationship as causal.
 
 EXPLANATION
 -----------
@@ -251,9 +395,6 @@ do not invent a reason.
 If the supplied sources do not explain HOW something happens,
 return null for explanation.how.
 
-Do not introduce a scientific mechanism merely because it is
-generally known or plausible.
-
 DEEPER INSIGHT
 --------------
 
@@ -267,19 +408,7 @@ DEEPER INSIGHT
   decision-making unless explicitly supported.
 - Do not turn a plausible interpretation into a factual statement.
 - Do not derive a practical application from the source unless
-  the source explicitly supports it.
-- Do not strengthen source language.
-
-Do not upgrade:
-
-- "can contribute" -> "counts"
-- "may" -> "does"
-- "associated with" -> "causes"
-- "does not necessarily" -> "does not"
-- "can" -> "will"
-
-If the source does not contain a clearly distinct deeper insight,
-return null.
+  the source explicitly supports that application.
 
 CONNECTIONS
 -----------
@@ -290,15 +419,6 @@ Only include a connection when both the concept and its explanation
 are directly supported by the supplied sources.
 
 Do not create connections from general knowledge.
-
-Do not use a connection to introduce:
-- a new mechanism
-- a new causal relationship
-- an unsupported comparison
-- an analogy presented as fact
-- a broader conclusion
-
-If a connection is not clearly supported, omit it.
 
 TAKEAWAY
 --------
@@ -398,6 +518,7 @@ Do not use one source as an unstated bridge between facts from
 another source.
 
 Do not infer:
+
 - causality
 - trade-offs
 - offsets
@@ -424,8 +545,6 @@ Never strengthen:
 - "often" -> "always"
 - "some" -> "all"
 
-Do not remove meaningful uncertainty.
-
 FIELD-SPECIFIC RULES
 --------------------
 
@@ -434,12 +553,6 @@ CORE_IDEA
 
 Rewrite only what is necessary to make the core idea directly
 supported by the sources.
-
-Do not construct a new causal explanation from independently
-sourced facts.
-
-If a conclusion is explicitly stated by a source, that conclusion
-may be retained.
 
 EXPLANATION.WHAT
 ----------------
@@ -452,9 +565,6 @@ EXPLANATION.WHY
 Explain only what the source supports.
 
 Do not invent a mechanism to explain why something happens.
-
-If the source only establishes an association or observation,
-do not turn it into a causal explanation.
 
 EXPLANATION.HOW
 ---------------
@@ -584,7 +694,9 @@ Return ONLY the structured repair object.
                 "rejected assertions."
             )
 
-        source_context = self._build_source_context(sources)
+        source_context = self._build_source_context(
+            sources
+        )
 
         prompt = self._build_repair_prompt(
             grounding=grounding,
@@ -627,7 +739,10 @@ Return ONLY the structured repair object.
             and result.decision == "reject"
         }
 
-        if rejected_claim_ids and repair.claims is not None:
+        if (
+            rejected_claim_ids
+            and repair.claims is not None
+        ):
             repaired_claims_by_id = {
                 claim.id: claim
                 for claim in repair.claims
@@ -722,7 +837,9 @@ Return ONLY the structured repair object.
         # --------------------------------------------------------------
 
         if "deeper_insight" in rejected_fields:
-            updates["deeper_insight"] = repair.deeper_insight
+            updates["deeper_insight"] = (
+                repair.deeper_insight
+            )
 
         # --------------------------------------------------------------
         # CONNECTIONS
@@ -735,7 +852,9 @@ Return ONLY the structured repair object.
         )
 
         if connection_rejected:
-            connections = list(content.connections)
+            connections = list(
+                content.connections
+            )
 
             if repair.remove_connection_indexes:
                 indexes_to_remove = set(
@@ -744,7 +863,8 @@ Return ONLY the structured repair object.
 
                 connections = [
                     connection
-                    for index, connection in enumerate(connections)
+                    for index, connection
+                    in enumerate(connections)
                     if index not in indexes_to_remove
                 ]
 
@@ -758,12 +878,16 @@ Return ONLY the structured repair object.
                     and result.decision == "reject"
                 }
 
-                rejected_connection_indexes.discard(None)
+                rejected_connection_indexes.discard(
+                    None
+                )
 
                 repaired_connections_by_index = {
                     index: connection
                     for index, connection in zip(
-                        sorted(rejected_connection_indexes),
+                        sorted(
+                            rejected_connection_indexes
+                        ),
                         repair.connections,
                     )
                 }
@@ -777,10 +901,16 @@ Return ONLY the structured repair object.
                 for index, connection in enumerate(
                     original_connections
                 ):
-                    if index in repaired_connections_by_index:
+                    if (
+                        index
+                        in repaired_connections_by_index
+                    ):
                         final_connections.append(
-                            repaired_connections_by_index[index]
+                            repaired_connections_by_index[
+                                index
+                            ]
                         )
+
                     elif (
                         repair.remove_connection_indexes
                         and index
@@ -789,8 +919,11 @@ Return ONLY the structured repair object.
                         )
                     ):
                         continue
+
                     else:
-                        final_connections.append(connection)
+                        final_connections.append(
+                            connection
+                        )
 
                 connections = final_connections
 
@@ -809,7 +942,9 @@ Return ONLY the structured repair object.
 
             updates["takeaway"] = repair.takeaway
 
-        return content.model_copy(update=updates)
+        return content.model_copy(
+            update=updates
+        )
 
     # ------------------------------------------------------------------
     # CONNECTION INDEX HELPER
@@ -832,7 +967,9 @@ Return ONLY the structured repair object.
         if closing_bracket == -1:
             return None
 
-        index_text = remainder[:closing_bracket]
+        index_text = remainder[
+            :closing_bracket
+        ]
 
         try:
             return int(index_text)
@@ -850,9 +987,42 @@ Return ONLY the structured repair object.
 
         return content.model_copy(
             update={
-                "generated_at": datetime.now(timezone.utc),
+                "generated_at": datetime.now(
+                    timezone.utc
+                ),
                 "generator_version": GENERATOR_VERSION,
             }
+        )
+
+    # ------------------------------------------------------------------
+    # GENERATE KNOWLEDGE (source-free convenience wrapper)
+    # ------------------------------------------------------------------
+
+    async def generate_knowledge(
+        self,
+        *,
+        topic: str,
+        content_type: str,
+        difficulty: str,
+        allowed_topics: list[str],
+        direction: str | None = None,
+    ) -> CanonicalContent:
+        """
+        Source-free generation.
+
+        Does NOT persist. The caller (e.g. ContentSupplyRunner)
+        is responsible for saving the returned content.
+        """
+
+        return await self.generate(
+            topic=topic,
+            direction=direction,
+            content_type=content_type,
+            difficulty=difficulty,
+            allowed_topics=allowed_topics,
+            sources=None,
+            mode="knowledge",
+            persist=False,
         )
 
     # ------------------------------------------------------------------
@@ -865,13 +1035,35 @@ Return ONLY the structured repair object.
         topic: str,
         content_type: str,
         difficulty: str,
-        sources: list[SourceInput],
         allowed_topics: list[str],
+        sources: list[SourceInput] | None = None,
+        mode: GenerationMode = "knowledge",
+        direction: str | None = None,
+        persist: bool = True,
     ) -> CanonicalContent:
 
-        if not sources:
+        # --------------------------------------------------------------
+        # NORMALIZE SOURCES
+        # --------------------------------------------------------------
+
+        sources = sources or []
+
+        # --------------------------------------------------------------
+        # VALIDATE MODE
+        # --------------------------------------------------------------
+
+        if mode not in {
+            "grounded",
+            "knowledge",
+        }:
             raise ValueError(
-                "Canonical generation requires at least one source."
+                f"Unsupported canonical generation mode: {mode}"
+            )
+
+        if mode == "grounded" and not sources:
+            raise ValueError(
+                "Grounded canonical generation requires "
+                "at least one source."
             )
 
         if not allowed_topics:
@@ -882,24 +1074,41 @@ Return ONLY the structured repair object.
 
         # Remove duplicates while preserving order.
         allowed_topics = list(
-            dict.fromkeys(allowed_topics)
-        )
-
-        source_context = self._build_source_context(
-            sources
+            dict.fromkeys(
+                allowed_topics
+            )
         )
 
         # --------------------------------------------------------------
-        # ATTEMPT 1 — GENERATION
+        # SOURCE CONTEXT
+        # --------------------------------------------------------------
+
+        source_context = None
+
+        if sources:
+            source_context = (
+                self._build_source_context(
+                    sources
+                )
+            )
+
+        # --------------------------------------------------------------
+        # GENERATION PROMPT
         # --------------------------------------------------------------
 
         prompt = self._build_generation_prompt(
             topic=topic,
             content_type=content_type,
             difficulty=difficulty,
-            source_context=source_context,
             allowed_topics=allowed_topics,
+            mode=mode,
+            source_context=source_context,
+            direction=direction,
         )
+
+        # --------------------------------------------------------------
+        # INITIAL GENERATION
+        # --------------------------------------------------------------
 
         content = await self.llm.generate(
             prompt=prompt,
@@ -916,8 +1125,51 @@ Return ONLY the structured repair object.
         )
 
         # --------------------------------------------------------------
-        # DETERMINISTIC SOURCE VALIDATION
+        # KNOWLEDGE MODE
         # --------------------------------------------------------------
+
+        if mode == "knowledge":
+            # Knowledge-mode content deliberately has no external
+            # source grounding.
+            #
+            # We enforce the contract here rather than trusting
+            # the LLM to follow it perfectly.
+
+            if content.sources:
+                raise ValueError(
+                    "Knowledge-mode canonical content must not "
+                    "contain fabricated external sources."
+                )
+
+            for claim in content.claims:
+                if claim.source_ids:
+                    raise ValueError(
+                        "Knowledge-mode claims must not contain "
+                        "fabricated source IDs."
+                    )
+
+                if claim.source_quote is not None:
+                    raise ValueError(
+                        "Knowledge-mode claims must not contain "
+                        "fabricated source quotes."
+                    )
+
+            finalized_content = self._finalize(
+                content
+            )
+
+            if persist:
+                self.repository.save(
+                    finalized_content
+                )
+
+            return finalized_content
+
+        # --------------------------------------------------------------
+        # GROUNDED MODE
+        # --------------------------------------------------------------
+
+        # At this point sources are guaranteed to exist.
 
         validate_source_traceability(
             content,
@@ -928,9 +1180,11 @@ Return ONLY the structured repair object.
         # LAYA GROUNDING — ATTEMPT 1
         # --------------------------------------------------------------
 
-        grounding = self.grounding_judge.judge_content(
-            content=content,
-            sources=sources,
+        grounding = (
+            self.grounding_judge.judge_content(
+                content=content,
+                sources=sources,
+            )
         )
 
         self._print_grounding_report(
@@ -947,9 +1201,10 @@ Return ONLY the structured repair object.
                 content,
             )
 
-            self.repository.save(
-                finalized_content,
-            )
+            if persist:
+                self.repository.save(
+                    finalized_content,
+                )
 
             return finalized_content
 
@@ -971,10 +1226,12 @@ Return ONLY the structured repair object.
         # APPLY REPAIRS
         # --------------------------------------------------------------
 
-        repaired_content = self._apply_grounding_repair(
-            content=content,
-            grounding=grounding,
-            repair=repair,
+        repaired_content = (
+            self._apply_grounding_repair(
+                content=content,
+                grounding=grounding,
+                repair=repair,
+            )
         )
 
         # --------------------------------------------------------------
@@ -995,9 +1252,11 @@ Return ONLY the structured repair object.
         # LAYA GROUNDING — ATTEMPT 2
         # --------------------------------------------------------------
 
-        repaired_grounding = self.grounding_judge.judge_content(
-            content=repaired_content,
-            sources=sources,
+        repaired_grounding = (
+            self.grounding_judge.judge_content(
+                content=repaired_content,
+                sources=sources,
+            )
         )
 
         self._print_grounding_report(
@@ -1014,9 +1273,10 @@ Return ONLY the structured repair object.
                 repaired_content,
             )
 
-            self.repository.save(
-                finalized_content,
-            )
+            if persist:
+                self.repository.save(
+                    finalized_content,
+                )
 
             return finalized_content
 

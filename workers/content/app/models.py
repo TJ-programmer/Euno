@@ -1,5 +1,7 @@
+
 from datetime import datetime
-from typing import Literal,Optional
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -14,7 +16,7 @@ class Claim(BaseModel):
         "interesting",
     ]
     source_ids: list[str]
-    source_quote: str | None 
+    source_quote: str | None
 
     confidence: float | None = Field(
         ge=0,
@@ -74,6 +76,19 @@ class CanonicalContent(BaseModel):
         "concept",
     ]
 
+    # How this content was produced.
+    #
+    # sourced:
+    #   Content was generated from supplied SourceInput objects
+    #   and can be source-grounded.
+    #
+    # model_knowledge:
+    #   Content was generated without external source material.
+    provenance: Literal[
+        "sourced",
+        "model_knowledge",
+    ]
+
     topics: list[str]
 
     title: str
@@ -92,6 +107,7 @@ class CanonicalContent(BaseModel):
 
     takeaway: str
 
+    # Empty for model-knowledge content.
     sources: list[Source]
 
     difficulty: Literal[
@@ -111,6 +127,7 @@ class CanonicalContent(BaseModel):
     generated_at: datetime
 
     generator_version: str
+
 
 class SourceInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -135,6 +152,7 @@ class SourceInput(BaseModel):
 
     content: str
 
+
 class GroundingRepair(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -155,8 +173,10 @@ class GroundingRepair(BaseModel):
 
     takeaway: str | None
 
-class EmptyPayload(BaseModel): 
+
+class EmptyPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
 
 class HomePresentation(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -166,3 +186,92 @@ class HomePresentation(BaseModel):
     display_title: str
     display_summary: str
     payload: EmptyPayload
+
+
+class FlowSection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    body: str
+    source_claim_ids: list[str]
+
+
+class FlowPresentation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    content_id: str
+
+    hook: FlowSection
+    tension: FlowSection
+    reveal: FlowSection
+    why: FlowSection
+    surprise: FlowSection
+    connection: FlowSection
+    takeaway: FlowSection
+    next_curiosity: FlowSection
+
+    payload: EmptyPayload
+
+
+class FlowGroundingResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    field: str
+    claim: str
+    claim_id: str
+    noul: float
+    decision: Literal[
+        "accept",
+        "review",
+        "reject",
+    ]
+
+
+class FlowGroundingReport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    results: list[FlowGroundingResult]
+
+    @property
+    def all_accepted(self) -> bool:
+        return all(
+            result.decision == "accept"
+            for result in self.results
+        )
+
+    @property
+    def needs_review(self) -> bool:
+        return any(
+            result.decision == "review"
+            for result in self.results
+        )
+
+    @property
+    def has_rejections(self) -> bool:
+        return any(
+            result.decision == "reject"
+            for result in self.results
+        )
+
+
+class FlowGroundingRepair(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    hook: FlowSection | None
+    tension: FlowSection | None
+    reveal: FlowSection | None
+    why: FlowSection | None
+    surprise: FlowSection | None
+    connection: FlowSection | None
+    takeaway: FlowSection | None
+    next_curiosity: FlowSection | None
+
+
+class ContentPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    topic: str
+    direction: str
+    content_type: str
+    difficulty: str
+
