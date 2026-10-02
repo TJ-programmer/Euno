@@ -1,4 +1,3 @@
-
 from app.models import (
     CanonicalContent,
     FlowPresentation,
@@ -173,6 +172,12 @@ class ContentRepository:
         presentation: FlowPresentation,
     ) -> str:
 
+        if not presentation.label:
+            raise ValueError(
+                "Flow presentation is missing a label. "
+                "The label must come from FlowPresentationGenerator."
+            )
+
         database_content_id = self.get_content_database_id(
             content
         )
@@ -180,10 +185,10 @@ class ContentRepository:
         row = {
             "content_id": database_content_id,
             "surface": "flow",
-            "label": None,
+            "label": presentation.label,
             "display_title": None,
             "display_summary": None,
-            "payload": presentation.model_dump(
+            "payload": presentation.payload.model_dump(
                 mode="json"
             ),
         }
@@ -390,4 +395,3 @@ class ContentRepository:
         )
 
         return result.data
-

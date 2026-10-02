@@ -1,4 +1,3 @@
-
 from app.models import CanonicalContent, FlowPresentation
 
 
@@ -31,7 +30,7 @@ def validate_flow_presentation(
 
     for section_name in FLOW_SECTION_NAMES:
         section = getattr(
-            presentation,
+            presentation.payload,
             section_name,
         )
 
@@ -58,10 +57,3 @@ def validate_flow_presentation(
                 f"unknown canonical claims: "
                 f"{sorted(unknown_claim_ids)}"
             )
-
-    if presentation.payload.model_dump() != {}:
-        raise ValueError(
-            "Flow presentation payload must be empty "
-            "for the current Flow presentation contract."
-        )
-

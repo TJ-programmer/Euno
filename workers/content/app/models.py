@@ -1,4 +1,3 @@
-
 from datetime import datetime
 from typing import Literal
 
@@ -178,6 +177,14 @@ class EmptyPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class HomePayload(BaseModel):
+    """Home-specific presentation metadata."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    detailed_summary: str
+
+
 class HomePresentation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -185,7 +192,7 @@ class HomePresentation(BaseModel):
     label: str
     display_title: str
     display_summary: str
-    payload: EmptyPayload
+    payload: HomePayload
 
 
 class FlowSection(BaseModel):
@@ -196,10 +203,8 @@ class FlowSection(BaseModel):
     source_claim_ids: list[str]
 
 
-class FlowPresentation(BaseModel):
+class FlowPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
-    content_id: str
 
     hook: FlowSection
     tension: FlowSection
@@ -210,7 +215,13 @@ class FlowPresentation(BaseModel):
     takeaway: FlowSection
     next_curiosity: FlowSection
 
-    payload: EmptyPayload
+
+class FlowPresentation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    content_id: str
+    label: str
+    payload: FlowPayload
 
 
 class FlowGroundingResult(BaseModel):
@@ -274,4 +285,3 @@ class ContentPlan(BaseModel):
     direction: str
     content_type: str
     difficulty: str
-

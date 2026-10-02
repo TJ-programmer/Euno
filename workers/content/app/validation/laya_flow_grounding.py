@@ -62,8 +62,12 @@ class LayaFlowGroundingJudge:
         }
 
         for field in FLOW_SECTION_NAMES:
+            # ----------------------------------------------------------
+            # Flow sections live inside presentation.payload.
+            # ----------------------------------------------------------
+
             section = getattr(
-                presentation,
+                presentation.payload,
                 field,
             )
 
@@ -89,8 +93,6 @@ class LayaFlowGroundingJudge:
 
             # ----------------------------------------------------------
             # Ground the COMPLETE section body.
-            #
-            # This is important.
             #
             # We do NOT ground each source claim independently and
             # conclude that the section is valid.
@@ -126,10 +128,8 @@ class LayaFlowGroundingJudge:
             # ----------------------------------------------------------
 
             grounding_result = self.judge.judge_claim(
-                claim_id=(
-                    ",".join(
-                        section.source_claim_ids
-                    )
+                claim_id=",".join(
+                    section.source_claim_ids
                 ),
                 claim=section.body,
                 sources=sources,

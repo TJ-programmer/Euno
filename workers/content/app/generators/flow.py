@@ -6,6 +6,7 @@ from app.models import (
     SourceInput,
 )
 from app.prompts.flow import FLOW_PRESENTATION_SYSTEM_PROMPT
+from app.topics import build_topic_prompt_block, validate_topic_label
 from app.validation.flow import validate_flow_presentation
 from app.validation.laya_flow_grounding import (
     LayaFlowGroundingJudge,
@@ -53,6 +54,9 @@ CONTENT:
 
     # ------------------------------------------------------------------
     # GENERATION PROMPT
+    #
+    # All rules live in FLOW_PRESENTATION_SYSTEM_PROMPT. This prompt
+    # only carries the dynamic parts, so nothing is stated twice.
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -60,187 +64,36 @@ CONTENT:
         content: CanonicalContent,
     ) -> str:
 
-        canonical = content.model_dump_json(
-            indent=2
-        )
+        # No indent: pretty-printing wastes whitespace tokens.
+        # If CanonicalContent has fields Flow does not need, exclude
+        # them here, e.g. model_dump_json(exclude={"..."}).
+        canonical = content.model_dump_json()
 
         return f"""
 {FLOW_PRESENTATION_SYSTEM_PROMPT}
 
 CANONICAL CONTENT
------------------
-
 {canonical}
 
 TASK
-----
+Produce the eight-section Euno Flow (hook, tension, reveal, why,
+surprise, connection, takeaway, next_curiosity). No extra sections.
+`content_id` MUST exactly equal: {content.id}
 
-Transform this canonical content into the Euno Flow sequence.
+{build_topic_prompt_block()}
 
-The Flow sequence MUST contain exactly these eight sections:
-
-1. hook
-2. tension
-3. reveal
-4. why
-5. surprise
-6. connection
-7. takeaway
-8. next_curiosity
-
-Do not add sections.
-
-The `content_id` MUST exactly match:
-
-{content.id}
-
-GROUNDING REQUIREMENTS
-----------------------
-
-The canonical content is the ONLY knowledge source.
-
-Do not introduce facts from general knowledge.
-
-Every factual assertion in every Flow section must be
-supported by one or more canonical claims.
-
-Every section MUST include the IDs of the canonical claims
-that support its body.
-
-Use only claim IDs that actually exist in the canonical
-content.
-
-Do not use a claim ID merely because it is thematically
-related.
-
-The referenced claim must actually support the substantive
-content of the section.
-
-Do not strengthen the canonical claims.
-
-Preserve qualifiers such as:
-
-- may
-- can
-- often
-- some
-- associated with
-- does not necessarily
-
-Do not turn them into stronger statements such as:
-
-- will
-- always
-- all
-- causes
-- does not
-
-MULTI-CLAIM SECTIONS
---------------------
-
-When a section depends on multiple claims, reference all
-relevant claim IDs.
-
-However, referencing multiple claims does NOT authorize
-creating a new causal relationship between them.
-
-Do not combine independently stated claims into a new:
-
-- mechanism
-- causal explanation
-- comparison
-- trade-off
-- offset
-- ranking
-- net effect
-- broader conclusion
-
-unless the canonical content explicitly supports that
-relationship.
-
-SECTION RULES
--------------
-
-HOOK
-----
-
-Create the initial curiosity.
-
-Do not reveal the complete answer immediately.
-
-The hook may use a canonical fact, but must remain faithful
-to the canonical content.
-
-TENSION
--------
-
-Create the central intellectual tension.
-
-The tension must arise from the canonical content.
-
-Do not invent a contradiction that does not exist.
-
-REVEAL
-------
-
-Reveal the central answer supported by the canonical content.
-
-WHY
----
-
-Explain why the reveal is true using only canonical claims.
-
-Do not invent mechanisms.
-
-SURPRISE
---------
-
-Provide a genuinely supported unexpected implication,
-contrast, or realization.
-
-Do not manufacture a surprise merely for engagement.
-
-CONNECTION
-----------
-
-Connect the idea to another concept only when that connection
-is explicitly supported by the canonical content.
-
-Do not introduce outside examples or general knowledge.
-
-If no meaningful supported connection exists, keep the
-connection section simple and grounded in the canonical idea.
-
-TAKEAWAY
---------
-
-Compress the central understanding.
-
-Do not introduce advice or a new claim.
-
-NEXT CURIOSITY
---------------
-
-Create the natural next question that follows from the
-canonical content.
-
-The question must remain within the knowledge boundary of
-the canonical content.
-
-Do not imply an answer that is not supported.
-
-SOURCE CLAIM IDS
-----------------
-
-Each section MUST contain source_claim_ids.
-
-source_claim_ids must contain only canonical claim IDs.
+Every section needs source_claim_ids using only IDs that exist in the
+canonical content. Follow all voice, grounding, qualifier and
+no-synthesis rules above.
 
 Return ONLY the structured FlowPresentation object.
 """
 
     # ------------------------------------------------------------------
     # REPAIR PROMPT
+    #
+    # Runs without the system prompt, so it carries its own compact
+    # rule set.
     # ------------------------------------------------------------------
 
     def _build_repair_prompt(
@@ -257,142 +110,45 @@ Return ONLY the structured FlowPresentation object.
         ]
 
         rejected_sections = "\n\n".join(
-            f"""
-FIELD:
-{result.field}
-
-ASSERTION:
-{result.claim}
-
-CLAIM IDS:
-{result.claim_id}
-
-GROUNDING SCORE:
-{result.noul:.4f}
-
-REPAIR REQUIREMENT:
-Rewrite this Flow section so that every substantive
-assertion is directly supported by the canonical content.
-"""
+            f"""FIELD: {result.field}
+ASSERTION: {result.claim}
+CLAIM IDS: {result.claim_id}
+GROUNDING SCORE: {result.noul:.4f}"""
             for result in rejected
         )
 
-        canonical = content.model_dump_json(
-            indent=2
-        )
+        canonical = content.model_dump_json()
 
         return f"""
-You are repairing rejected sections of an Euno Flow
-presentation.
-
-The Flow presentation has already been generated.
-
-DO NOT regenerate the entire Flow.
-
-Repair ONLY the rejected sections listed below.
+Repair ONLY the rejected sections of an Euno Flow. Do not regenerate
+the whole Flow.
 
 CANONICAL CONTENT
------------------
-
 {canonical}
 
 REJECTED SECTIONS
------------------
-
 {rejected_sections}
 
-REPAIR RULES
-------------
+RULES
+- Use only the canonical content. No outside knowledge, new facts,
+  evidence, mechanisms, causal links, comparisons, trade-offs, offsets,
+  rankings, or broader conclusions. Never strengthen claims; preserve
+  qualifiers (may, can, often, some, associated with, does not
+  necessarily).
+- Keep the warm, vivid, conversational voice with concrete words and
+  varied rhythm. Remove the unsupported assertion, not the personality:
+  rebuild the section from supported facts and make THOSE interesting.
+- Every repaired section needs source_claim_ids with real IDs that
+  directly support it. If the original assertion cannot be supported,
+  simplify; do not keep it because it sounds good.
+- hook: curiosity, no new facts. tension: no unsupported contradiction.
+  reveal: only the canonical central answer. why: only what claims
+  support. surprise: only directly supported implications. connection:
+  no outside analogy. takeaway: summarize the canonical idea.
+  next_curiosity: a question, no unsupported answer.
 
-- Use only the supplied canonical content.
-- Do not use outside knowledge.
-- Do not introduce new facts.
-- Do not introduce new evidence.
-- Do not invent mechanisms.
-- Do not invent causal relationships.
-- Do not invent comparisons.
-- Do not invent trade-offs.
-- Do not invent offsets.
-- Do not invent rankings.
-- Do not invent broader conclusions.
-- Do not strengthen canonical claims.
-
-Preserve qualifiers such as:
-
-- may
-- can
-- often
-- some
-- associated with
-- does not necessarily
-
-Never strengthen them.
-
-SOURCE CLAIM IDS
-----------------
-
-Every repaired section MUST contain source_claim_ids.
-
-Every source_claim_id must correspond to an actual claim
-in the canonical content.
-
-Only reference claims that directly support the repaired
-section.
-
-If a section cannot safely make its original assertion,
-simplify it.
-
-Do not preserve a rejected assertion merely because it
-sounds interesting.
-
-SECTION-SPECIFIC RULES
-----------------------
-
-HOOK
-----
-
-Preserve curiosity without adding unsupported facts.
-
-TENSION
--------
-
-Do not create a contradiction that is not supported.
-
-REVEAL
-------
-
-State only the canonical central answer.
-
-WHY
----
-
-Explain only what the canonical claims support.
-
-SURPRISE
---------
-
-Only include an additional implication if it is directly
-supported.
-
-CONNECTION
-----------
-
-Do not introduce an outside analogy or factual comparison.
-
-TAKEAWAY
---------
-
-Summarize the canonical understanding.
-
-NEXT CURIOSITY
---------------
-
-Ask a natural next question without asserting an unsupported
-answer.
-
-Return ONLY the structured FlowGroundingRepair object.
-
-For sections that were not rejected, return null.
+Return ONLY the FlowGroundingRepair object. Return null for sections
+that were not rejected.
 """
 
     # ------------------------------------------------------------------
@@ -567,6 +323,10 @@ For sections that were not rejected, return null.
             presentation=presentation,
             content=content,
         )
+
+        # The label is never touched by grounding repair (repair only
+        # replaces rejected sections), so validating it once is enough.
+        validate_topic_label(presentation.label)
 
         # --------------------------------------------------------------
         # KNOWLEDGE MODE — NO SOURCE GROUNDING
