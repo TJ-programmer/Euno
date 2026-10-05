@@ -1,3 +1,4 @@
+
 from app.models import (
     CanonicalContent,
     FlowPresentation,
@@ -95,6 +96,70 @@ class ContentRepository:
         return content_id
 
     # ------------------------------------------------------------------
+    # GET CANONICAL CONTENT
+    # ------------------------------------------------------------------
+
+    def get_content(
+        self,
+        content_id: str,
+    ) -> CanonicalContent:
+
+        result = (
+            supabase
+            .table("content_items")
+            .select("*")
+            .eq("id", content_id)
+            .single()
+            .execute()
+        )
+
+        if not result.data:
+            raise RuntimeError(
+                f"Content not found: {content_id}"
+            )
+
+        body = result.data.get("body")
+
+        if not body:
+            raise RuntimeError(
+                f"Content body missing: {content_id}"
+            )
+
+        return CanonicalContent.model_validate(body)
+
+    # ------------------------------------------------------------------
+    # GET CONTENT BY SLUG
+    # ------------------------------------------------------------------
+
+    def get_content_by_slug(
+        self,
+        slug: str,
+    ) -> CanonicalContent:
+
+        result = (
+            supabase
+            .table("content_items")
+            .select("*")
+            .eq("slug", slug)
+            .single()
+            .execute()
+        )
+
+        if not result.data:
+            raise RuntimeError(
+                f"Content not found for slug: {slug}"
+            )
+
+        body = result.data.get("body")
+
+        if not body:
+            raise RuntimeError(
+                f"Content body missing for slug: {slug}"
+            )
+
+        return CanonicalContent.model_validate(body)
+
+    # ------------------------------------------------------------------
     # DATABASE ID BOUNDARY
     # ------------------------------------------------------------------
 
@@ -162,6 +227,39 @@ class ContentRepository:
 
         return result.data[0]["id"]
 
+    def get_home_presentation(
+        self,
+        content_id: str,
+    ) -> HomePresentation | None:
+
+        result = (
+            supabase
+            .table("content_presentations")
+            .select(
+                "content_id,label,display_title,"
+                "display_summary,payload"
+            )
+            .eq("content_id", content_id)
+            .eq("surface", "home")
+            .maybe_single()
+            .execute()
+        )
+
+        if not result.data:
+            return None
+
+        row = result.data
+
+        return HomePresentation.model_validate(
+            {
+                "content_id": row["content_id"],
+                "label": row["label"],
+                "display_title": row["display_title"],
+                "display_summary": row["display_summary"],
+                "payload": row["payload"],
+            }
+        )
+
     # ------------------------------------------------------------------
     # FLOW PRESENTATION
     # ------------------------------------------------------------------
@@ -172,12 +270,6 @@ class ContentRepository:
         presentation: FlowPresentation,
     ) -> str:
 
-        if not presentation.label:
-            raise ValueError(
-                "Flow presentation is missing a label. "
-                "The label must come from FlowPresentationGenerator."
-            )
-
         database_content_id = self.get_content_database_id(
             content
         )
@@ -185,10 +277,10 @@ class ContentRepository:
         row = {
             "content_id": database_content_id,
             "surface": "flow",
-            "label": presentation.label,
+            "label": None,
             "display_title": None,
             "display_summary": None,
-            "payload": presentation.payload.model_dump(
+            "payload": presentation.model_dump(
                 mode="json"
             ),
         }
@@ -210,188 +302,33 @@ class ContentRepository:
 
         return result.data[0]["id"]
 
-    # ------------------------------------------------------------------
-    # READ — HOME FEED
-    # ------------------------------------------------------------------
-
-    def get_home_feed(
-        self,
-        *,
-        limit: int = 10,
-    ) -> list[dict]:
-
-        if limit < 1:
-            raise ValueError(
-                "Home feed limit must be at least 1."
-            )
-
-        result = (
-            supabase
-            .table("content_presentations")
-            .select(
-                """
-                id,
-                content_id,
-                surface,
-                label,
-                display_title,
-                display_summary,
-                payload,
-                created_at,
-                updated_at,
-                content_items!inner(
-                    slug,
-                    content_type,
-                    title,
-                    difficulty,
-                    estimated_minutes,
-                    published_at
-                )
-                """
-            )
-            .eq("surface", "home")
-            .order(
-                "created_at",
-                desc=True,
-            )
-            .limit(limit)
-            .execute()
-        )
-
-        if result.data is None:
-            return []
-
-        return result.data
-
-    # ------------------------------------------------------------------
-    # READ — FLOW PRESENTATION
-    # ------------------------------------------------------------------
-
     def get_flow_presentation(
         self,
-        *,
         content_id: str,
-    ) -> dict | None:
-
-        if not content_id:
-            raise ValueError(
-                "Flow presentation requires a content ID."
-            )
+    ) -> FlowPresentation | None:
 
         result = (
             supabase
             .table("content_presentations")
-            .select(
-                """
-                id,
-                content_id,
-                surface,
-                label,
-                display_title,
-                display_summary,
-                payload,
-                created_at,
-                updated_at,
-                content_items!inner(
-                    slug,
-                    content_type,
-                    title,
-                    difficulty,
-                    estimated_minutes,
-                    published_at
-                )
-                """
-            )
+            .select("payload")
             .eq("content_id", content_id)
             .eq("surface", "flow")
             .maybe_single()
             .execute()
         )
 
-        return result.data
+        if not result.data:
+            return None
 
-    # ------------------------------------------------------------------
-    # READ — CANONICAL CONTENT BY DATABASE ID
-    # ------------------------------------------------------------------
+        payload = result.data.get("payload")
 
-    def get_content(
-        self,
-        *,
-        content_id: str,
-    ) -> dict | None:
-
-        if not content_id:
-            raise ValueError(
-                "Content lookup requires a content ID."
+        if not payload:
+            raise RuntimeError(
+                f"Flow presentation payload missing: "
+                f"{content_id}"
             )
 
-        result = (
-            supabase
-            .table("content_items")
-            .select(
-                """
-                id,
-                slug,
-                content_type,
-                title,
-                body,
-                source_url,
-                source_name,
-                source_published_at,
-                estimated_minutes,
-                difficulty,
-                published_at,
-                metadata,
-                created_at,
-                updated_at
-                """
-            )
-            .eq("id", content_id)
-            .maybe_single()
-            .execute()
+        return FlowPresentation.model_validate(
+            payload
         )
 
-        return result.data
-
-    # ------------------------------------------------------------------
-    # READ — CANONICAL CONTENT BY SLUG
-    # ------------------------------------------------------------------
-
-    def get_content_by_slug(
-        self,
-        *,
-        slug: str,
-    ) -> dict | None:
-
-        if not slug:
-            raise ValueError(
-                "Content lookup requires a slug."
-            )
-
-        result = (
-            supabase
-            .table("content_items")
-            .select(
-                """
-                id,
-                slug,
-                content_type,
-                title,
-                body,
-                source_url,
-                source_name,
-                source_published_at,
-                estimated_minutes,
-                difficulty,
-                published_at,
-                metadata,
-                created_at,
-                updated_at
-                """
-            )
-            .eq("slug", slug)
-            .maybe_single()
-            .execute()
-        )
-
-        return result.data
