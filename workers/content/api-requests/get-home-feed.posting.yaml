@@ -1,0 +1,7 @@
+name: Get Home Feed
+url: http://127.0.0.1:8000/api/v1/home
+params:
+- name: limit
+  value: '10'
+- name: offset
+  value: '0'

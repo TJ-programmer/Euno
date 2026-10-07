@@ -1,4 +1,3 @@
-
 from app.models import (
     CanonicalContent,
     FlowPresentation,
@@ -160,6 +159,82 @@ class ContentRepository:
         return CanonicalContent.model_validate(body)
 
     # ------------------------------------------------------------------
+    # HOME FEED
+    # ------------------------------------------------------------------
+
+    def get_home_feed(
+        self,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> list[dict]:
+
+        result = (
+            supabase
+            .table("content_items")
+            .select(
+                "id,"
+                "slug,"
+                "content_type,"
+                "body,"
+                "difficulty,"
+                "estimated_minutes,"
+                "published_at,"
+                "content_presentations!inner("
+                "label,"
+                "display_title,"
+                "display_summary,"
+                "surface"
+                ")"
+            )
+            .eq(
+                "content_presentations.surface",
+                "home",
+            )
+            .order(
+                "published_at",
+                desc=True,
+            )
+            .range(
+                offset,
+                offset + limit - 1,
+            )
+            .execute()
+        )
+
+        items: list[dict] = []
+
+        for row in result.data or []:
+            body = row.get("body") or {}
+
+            presentations = (
+                row.get("content_presentations") or []
+            )
+
+            if not presentations:
+                continue
+
+            presentation = presentations[0]
+
+            items.append(
+                {
+                    "content_id": row["id"],
+                    "slug": row["slug"],
+                    "label": presentation["label"],
+                    "title": presentation["display_title"],
+                    "summary": presentation["display_summary"],
+                    "content_type": row["content_type"],
+                    "difficulty": row["difficulty"],
+                    "estimated_minutes": row[
+                        "estimated_minutes"
+                    ],
+                    "topics": body.get("topics", []),
+                    "published_at": row["published_at"],
+                }
+            )
+
+        return items
+
+    # ------------------------------------------------------------------
     # DATABASE ID BOUNDARY
     # ------------------------------------------------------------------
 
@@ -195,8 +270,8 @@ class ContentRepository:
         presentation: HomePresentation,
     ) -> str:
 
-        database_content_id = self.get_content_database_id(
-            content
+        database_content_id = (
+            self.get_content_database_id(content)
         )
 
         row = {
@@ -270,8 +345,8 @@ class ContentRepository:
         presentation: FlowPresentation,
     ) -> str:
 
-        database_content_id = self.get_content_database_id(
-            content
+        database_content_id = (
+            self.get_content_database_id(content)
         )
 
         row = {
@@ -328,7 +403,11 @@ class ContentRepository:
                 f"{content_id}"
             )
 
-        return FlowPresentation.model_validate(
-            payload
-        )
+        # The stored Flow payload contains the canonical
+        # internal ID. The API boundary uses the database UUID.
+        payload = {
+            **payload,
+            "content_id": content_id,
+        }
 
+        return FlowPresentation.model_validate(payload)

@@ -1,0 +1,2 @@
+name: GET get canonical id data
+url: http://127.0.0.1:8000/api/v1/content/dded45af-700d-4063-89e3-9291a1fec55b

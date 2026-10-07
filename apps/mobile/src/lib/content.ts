@@ -1,37 +1,43 @@
-import { supabase } from "@/lib/supabase";
+const API_BASE_URL =
+  process.env.EXPO_PUBLIC_API_URL ?? "http://localhost:8000";
 
-export async function getHomeContent() {
-  const { data, error } = await supabase
-    .from("content_items")
-    .select(`
-      id,
-      slug,
-      content_type,
-      title,
-      hook,
-      summary,
-      body,
-      image_url,
-      estimated_minutes,
-      difficulty,
-      quality_score,
-      published_at,
-      content_presentations (
-        surface,
-        label,
-        display_title,
-        display_summary,
-        payload
-      )
-    `)
-    .eq("status", "published")
-    .eq("content_presentations.surface", "home")
-    .order("published_at", { ascending: false });
+export type HomeFeedItem = {
+  content_id: string;
+  slug: string;
+  label: string;
+  title: string;
+  summary: string;
+  content_type: string;
+  difficulty: string;
+  estimated_minutes: number;
+  topics: string[];
+  published_at: string | null;
+};
 
-  if (error) {
-    console.error("GET HOME CONTENT ERROR:", error);
-    throw error;
+export type HomeFeedResponse = {
+  items: HomeFeedItem[];
+  limit: number;
+  offset: number;
+};
+
+export async function getHomeContent(
+  limit = 20,
+  offset = 0,
+): Promise<HomeFeedItem[]> {
+  const url =
+    `${API_BASE_URL}/api/v1/home` +
+    `?limit=${limit}` +
+    `&offset=${offset}`;
+
+  const response = await fetch(url);
+
+  if (!response.ok) {
+    throw new Error(
+      `Failed to load Home feed (${response.status})`,
+    );
   }
 
-  return data ?? [];
+  const data: HomeFeedResponse = await response.json();
+
+  return data.items;
 }
