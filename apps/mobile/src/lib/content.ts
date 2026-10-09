@@ -1,5 +1,4 @@
-const API_BASE_URL =
-  process.env.EXPO_PUBLIC_API_URL ?? "http://localhost:8000";
+const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL ;
 
 export type HomeFeedItem = {
   content_id: string;
@@ -28,6 +27,8 @@ export async function getHomeContent(
     `${API_BASE_URL}/api/v1/home` +
     `?limit=${limit}` +
     `&offset=${offset}`;
+
+  console.log("HOME FEED REQUEST:", url);
 
   const response = await fetch(url);
 

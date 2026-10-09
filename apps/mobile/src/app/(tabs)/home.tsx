@@ -10,18 +10,12 @@ import {
   Dimensions,
   useColorScheme,
 } from "react-native";
+import { useRouter } from "expo-router";
 
-import {
-  Colors,
-  Fonts,
-  Spacing,
-} from "@/constants/theme";
-import {
-  getHomeContent,
-  type HomeFeedItem,
-} from "@/lib/content";
+import { Colors, Fonts, Spacing } from "@/constants/theme";
+import { getHomeContent, type HomeFeedItem } from "@/lib/content";
+import { getUsername } from "@/lib/profile";
 
-const USER_NAME = "Tarun";
 const DOUBLE_TAP_DELAY = 300;
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
@@ -34,8 +28,7 @@ const HERO_ITEM_SIZE = HERO_WIDTH + HERO_SPACING;
 /* Fallback images, grouped by topic / label keywords                  */
 /* ------------------------------------------------------------------ */
 
-const u = (id: string) =>
-  `https://images.unsplash.com/${id}?w=900`;
+const u = (id: string) => `https://images.unsplash.com/${id}?w=900`;
 
 const DEFAULT_IMAGE = u("photo-1500534623283-312aade485b7");
 
@@ -156,11 +149,7 @@ function hashString(str: string) {
  * Uses a hash of the content id so the same item always gets the
  * same image (in the hero and in the list).
  */
-function pickFallbackImage(
-  id: string,
-  topics: string[],
-  label: string,
-) {
+function pickFallbackImage(id: string, topics: string[], label: string) {
   const words = [label, ...topics]
     .join(" ")
     .toLowerCase()
@@ -177,13 +166,7 @@ function pickFallbackImage(
 }
 
 /** Image that falls back to a default if the remote URL fails. */
-function RemoteImage({
-  uri,
-  style,
-}: {
-  uri: string;
-  style: any;
-}) {
+function RemoteImage({ uri, style }: { uri: string; style: any }) {
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
@@ -238,9 +221,7 @@ const CHIP_ICONS = ["◐", "▣", "◈", "✦", "◎"];
 type Theme = typeof Colors.light;
 
 function toTitleCase(text: string) {
-  return text
-    .toLowerCase()
-    .replace(/(^|\s)\S/g, (c) => c.toUpperCase());
+  return text.toLowerCase().replace(/(^|\s)\S/g, (c) => c.toUpperCase());
 }
 
 function normalizeLabel(label?: string | null) {
@@ -283,25 +264,13 @@ function useDoubleTap(onDoubleTap: () => void) {
   }).current;
 }
 
-function Avatar({ theme }: { theme: Theme }) {
+function Avatar({ theme, name }: { theme: Theme; name: string }) {
   return (
     <View
-      style={[
-        styles.avatar,
-        {
-          backgroundColor: theme.onboardingBorder,
-        },
-      ]}
+      style={[styles.avatar, { backgroundColor: theme.onboardingBorder }]}
     >
-      <Text
-        style={[
-          styles.avatarText,
-          {
-            color: theme.text,
-          },
-        ]}
-      >
-        {USER_NAME.charAt(0)}
+      <Text style={[styles.avatarText, { color: theme.text }]}>
+        {name.charAt(0).toUpperCase()}
       </Text>
     </View>
   );
@@ -363,10 +332,7 @@ function HeroCard({
   });
 
   return (
-    <Pressable
-      onPress={handleTap}
-      style={styles.heroCardWrap}
-    >
+    <Pressable onPress={handleTap} style={styles.heroCardWrap}>
       {({ pressed }) => (
         <Animated.View
           style={[
@@ -385,39 +351,20 @@ function HeroCard({
             pressed && styles.pressed,
           ]}
         >
-          <RemoteImage
-            uri={item.image}
-            style={styles.heroImage}
-          />
+          <RemoteImage uri={item.image} style={styles.heroImage} />
 
           <View
             style={[
               styles.heroLabelPill,
-              {
-                backgroundColor: theme.onboardingAccent,
-              },
+              { backgroundColor: theme.onboardingAccent },
             ]}
           >
-            <Text
-              style={[
-                styles.heroLabelText,
-                {
-                  color: theme.background,
-                },
-              ]}
-            >
+            <Text style={[styles.heroLabelText, { color: theme.background }]}>
               {item.label}
             </Text>
           </View>
 
-          <Text
-            style={[
-              styles.heroMeta,
-              {
-                color: theme.textSecondary,
-              },
-            ]}
-          >
+          <Text style={[styles.heroMeta, { color: theme.textSecondary }]}>
             {item.category} · {item.readTime}
             {read ? " · Read" : ""}
           </Text>
@@ -425,42 +372,22 @@ function HeroCard({
           <Text
             style={[
               styles.heroTitle,
-              {
-                color: theme.text,
-                fontFamily: Fonts.serif,
-              },
+              { color: theme.text, fontFamily: Fonts.serif },
             ]}
           >
             {item.title}
           </Text>
 
           <Text
-            style={[
-              styles.heroDescription,
-              {
-                color: theme.textSecondary,
-              },
-            ]}
+            style={[styles.heroDescription, { color: theme.textSecondary }]}
           >
             {item.description}
           </Text>
 
           <View
-            style={[
-              styles.tapPill,
-              {
-                borderColor: theme.onboardingBorder,
-              },
-            ]}
+            style={[styles.tapPill, { borderColor: theme.onboardingBorder }]}
           >
-            <Text
-              style={[
-                styles.tapPillText,
-                {
-                  color: theme.textSecondary,
-                },
-              ]}
-            >
+            <Text style={[styles.tapPillText, { color: theme.textSecondary }]}>
               ⇢⇢  double tap to open
             </Text>
           </View>
@@ -485,15 +412,7 @@ function HeroStack({
   const [activeIndex, setActiveIndex] = useState(0);
 
   const handleScroll = Animated.event(
-    [
-      {
-        nativeEvent: {
-          contentOffset: {
-            x: scrollX,
-          },
-        },
-      },
-    ],
+    [{ nativeEvent: { contentOffset: { x: scrollX } } }],
     {
       useNativeDriver: true,
       listener: (e: any) => {
@@ -522,9 +441,7 @@ function HeroStack({
         decelerationRate="fast"
         bounces={false}
         showsHorizontalScrollIndicator={false}
-        contentContainerStyle={{
-          paddingHorizontal: Spacing.four,
-        }}
+        contentContainerStyle={{ paddingHorizontal: Spacing.four }}
         onScroll={handleScroll}
         scrollEventThrottle={16}
         extraData={readIds}
@@ -559,14 +476,7 @@ function HeroStack({
           ))}
         </View>
 
-        <Text
-          style={[
-            styles.pageFraction,
-            {
-              color: theme.textSecondary,
-            },
-          ]}
-        >
+        <Text style={[styles.pageFraction, { color: theme.textSecondary }]}>
           {activeIndex + 1} / {cards.length}
         </Text>
       </View>
@@ -609,9 +519,7 @@ function CategoryChips({
           >
             <Text
               style={{
-                color: isActive
-                  ? theme.background
-                  : theme.text,
+                color: isActive ? theme.background : theme.text,
                 fontSize: 13,
               }}
             >
@@ -621,11 +529,7 @@ function CategoryChips({
             <Text
               style={[
                 styles.chipText,
-                {
-                  color: isActive
-                    ? theme.background
-                    : theme.text,
-                },
+                { color: isActive ? theme.background : theme.text },
               ]}
             >
               {cat.label}
@@ -659,20 +563,10 @@ function ListRow({
         read && styles.readRow,
       ]}
     >
-      <RemoteImage
-        uri={item.image}
-        style={styles.listThumb}
-      />
+      <RemoteImage uri={item.image} style={styles.listThumb} />
 
       <View style={styles.listText}>
-        <Text
-          style={[
-            styles.listMeta,
-            {
-              color: theme.textSecondary,
-            },
-          ]}
-        >
+        <Text style={[styles.listMeta, { color: theme.textSecondary }]}>
           {item.category} · {item.readTime}
           {read ? " · Read" : ""}
         </Text>
@@ -680,10 +574,7 @@ function ListRow({
         <Text
           style={[
             styles.listTitle,
-            {
-              color: theme.text,
-              fontFamily: Fonts.serif,
-            },
+            { color: theme.text, fontFamily: Fonts.serif },
           ]}
           numberOfLines={2}
         >
@@ -692,46 +583,27 @@ function ListRow({
       </View>
 
       <View
-        style={[
-          styles.arrowCircle,
-          {
-            backgroundColor: theme.onboardingBorder,
-          },
-        ]}
+        style={[styles.arrowCircle, { backgroundColor: theme.onboardingBorder }]}
       >
-        <Text
-          style={[
-            styles.arrowText,
-            {
-              color: theme.text,
-            },
-          ]}
-        >
-          ›
-        </Text>
+        <Text style={[styles.arrowText, { color: theme.text }]}>›</Text>
       </View>
     </Pressable>
   );
 }
 
 export default function HomeScreen() {
+  const router = useRouter();
   const scheme = useColorScheme() ?? "light";
   const theme = Colors[scheme];
 
-  const [activeCategory, setActiveCategory] =
-    useState(FOR_YOU.key);
+  const [username, setUsername] = useState<string | null>(null);
+  const [checkedProfile, setCheckedProfile] = useState(false);
 
-  const [readIds, setReadIds] =
-    useState<Set<string>>(new Set());
-
-  const [content, setContent] =
-    useState<HomeFeedItem[]>([]);
-
-  const [loading, setLoading] =
-    useState(true);
-
-  const [error, setError] =
-    useState<string | null>(null);
+  const [activeCategory, setActiveCategory] = useState(FOR_YOU.key);
+  const [readIds, setReadIds] = useState<Set<string>>(new Set());
+  const [content, setContent] = useState<HomeFeedItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const hour = new Date().getHours();
 
@@ -742,6 +614,37 @@ export default function HomeScreen() {
         ? "Good afternoon"
         : "Good evening";
 
+  // Load the username; send new users to onboarding.
+  useEffect(() => {
+    let active = true;
+
+    getUsername()
+      .then((name) => {
+        if (!active) return;
+
+        if (!name) {
+          router.replace("/(onboarding)/username");
+          return;
+        }
+
+        setUsername(name);
+        setCheckedProfile(true);
+      })
+      .catch((err) => {
+        console.error("Failed to load username:", err);
+
+        if (active) {
+          setCheckedProfile(true);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Load the feed.
   useEffect(() => {
     let mounted = true;
 
@@ -798,10 +701,7 @@ export default function HomeScreen() {
   }, [content]);
 
   // Hero carousel: always the top 5 items.
-  const heroItems = useMemo(
-    () => content.slice(0, 5),
-    [content],
-  );
+  const heroItems = useMemo(() => content.slice(0, 5), [content]);
 
   // List below: the rest, filtered by the selected label chip.
   const listSource = useMemo(() => {
@@ -812,46 +712,27 @@ export default function HomeScreen() {
     }
 
     return rest.filter(
-      (item) =>
-        normalizeLabel(item.label) === activeCategory,
+      (item) => normalizeLabel(item.label) === activeCategory,
     );
   }, [content, activeCategory]);
 
-  const heroCards: HeroCardData[] = heroItems.map(
-    (item) => ({
-      id: item.content_id,
-      label: item.label || "TODAY'S IDEA",
-      category: formatCategory(
-        item.topics,
-        item.label,
-      ),
-      readTime: `${item.estimated_minutes} min`,
-      title: item.title,
-      description: item.summary,
-      image: pickFallbackImage(
-        item.content_id,
-        item.topics,
-        item.label,
-      ),
-    }),
-  );
+  const heroCards: HeroCardData[] = heroItems.map((item) => ({
+    id: item.content_id,
+    label: item.label || "TODAY'S IDEA",
+    category: formatCategory(item.topics, item.label),
+    readTime: `${item.estimated_minutes} min`,
+    title: item.title,
+    description: item.summary,
+    image: pickFallbackImage(item.content_id, item.topics, item.label),
+  }));
 
-  const listItems: ListItemData[] = listSource.map(
-    (item) => ({
-      id: item.content_id,
-      category: formatCategory(
-        item.topics,
-        item.label,
-      ),
-      readTime: `${item.estimated_minutes} min`,
-      title: item.title,
-      image: pickFallbackImage(
-        item.content_id,
-        item.topics,
-        item.label,
-      ),
-    }),
-  );
+  const listItems: ListItemData[] = listSource.map((item) => ({
+    id: item.content_id,
+    category: formatCategory(item.topics, item.label),
+    readTime: `${item.estimated_minutes} min`,
+    title: item.title,
+    image: pickFallbackImage(item.content_id, item.topics, item.label),
+  }));
 
   const openContent = (id: string) => {
     setReadIds((prev) => new Set(prev).add(id));
@@ -863,14 +744,15 @@ export default function HomeScreen() {
     // router.push({ pathname: "/content/[id]", params: { id } });
   };
 
+  // Avoid flashing the feed before a possible onboarding redirect.
+  // (Must stay after all hooks.)
+  if (!checkedProfile) {
+    return null;
+  }
+
   return (
     <ScrollView
-      style={[
-        styles.container,
-        {
-          backgroundColor: theme.background,
-        },
-      ]}
+      style={[styles.container, { backgroundColor: theme.background }]}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}
     >
@@ -881,78 +763,45 @@ export default function HomeScreen() {
           <Text
             style={[
               styles.brand,
-              {
-                color: theme.text,
-                fontFamily: Fonts.serif,
-              },
+              { color: theme.text, fontFamily: Fonts.serif },
             ]}
           >
             euno
           </Text>
 
-          <Avatar theme={theme} />
+          <Avatar theme={theme} name={username ?? ""} />
         </View>
 
         <Text
           style={[
             styles.greeting,
-            {
-              color: theme.text,
-              fontFamily: Fonts.serif,
-            },
+            { color: theme.text, fontFamily: Fonts.serif },
           ]}
         >
-          {greeting}, {USER_NAME}
+          {greeting}
+          {username ? `, ${username}` : ""}
         </Text>
 
-        <Text
-          style={[
-            styles.subtitle,
-            {
-              color: theme.textSecondary,
-            },
-          ]}
-        >
+        <Text style={[styles.subtitle, { color: theme.textSecondary }]}>
           Small ideas. Big shifts.
         </Text>
       </View>
 
       {loading ? (
         <View style={styles.statusContainer}>
-          <Text
-            style={[
-              styles.statusText,
-              {
-                color: theme.textSecondary,
-              },
-            ]}
-          >
+          <Text style={[styles.statusText, { color: theme.textSecondary }]}>
             Finding something worth knowing...
           </Text>
         </View>
       ) : error ? (
         <View style={styles.statusContainer}>
-          <Text
-            style={[
-              styles.statusText,
-              {
-                color: theme.textSecondary,
-              },
-            ]}
-          >
+          <Text style={[styles.statusText, { color: theme.textSecondary }]}>
             {error}
           </Text>
         </View>
       ) : content.length === 0 ? (
         <View style={styles.statusContainer}>
-          <Text
-            style={[
-              styles.statusText,
-              {
-                color: theme.textSecondary,
-              },
-            ]}
-          >
+          <Text style={[styles.statusText, { color: theme.textSecondary }]}>
             Nothing new yet.
           </Text>
         </View>
@@ -979,14 +828,7 @@ export default function HomeScreen() {
           {/* More for you */}
 
           <View style={styles.sectionHeader}>
-            <Text
-              style={[
-                styles.sectionIcon,
-                {
-                  color: theme.onboardingAccent,
-                },
-              ]}
-            >
+            <Text style={[styles.sectionIcon, { color: theme.onboardingAccent }]}>
               ✦
             </Text>
 
@@ -994,22 +836,14 @@ export default function HomeScreen() {
               <Text
                 style={[
                   styles.sectionTitle,
-                  {
-                    color: theme.text,
-                    fontFamily: Fonts.serif,
-                  },
+                  { color: theme.text, fontFamily: Fonts.serif },
                 ]}
               >
                 More for you
               </Text>
 
               <Text
-                style={[
-                  styles.sectionSubtitle,
-                  {
-                    color: theme.textSecondary,
-                  },
-                ]}
+                style={[styles.sectionSubtitle, { color: theme.textSecondary }]}
               >
                 Based on your reading
               </Text>

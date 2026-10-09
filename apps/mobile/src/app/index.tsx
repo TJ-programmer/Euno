@@ -1,21 +1,33 @@
+
 import { Redirect } from "expo-router";
 import { ActivityIndicator, View } from "react-native";
 import { useAuthContext } from "@/providers/AuthProvider";
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
 
+type ProfileStatus = {
+  username: string | null;
+  onboardingCompleted: boolean;
+};
+
 export default function Index() {
   const { session, loading: authLoading } = useAuthContext();
 
   const [checkingProfile, setCheckingProfile] = useState(false);
-  const [onboardingCompleted, setOnboardingCompleted] = useState<boolean | null>(
-    null
-  );
+  const [profileStatus, setProfileStatus] =
+    useState<ProfileStatus | null>(null);
+  const [profileError, setProfileError] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
+
+  const userId = session?.user?.id;
 
   useEffect(() => {
-    if (!session?.user) {
-      setOnboardingCompleted(null);
+    if (authLoading) return;
+
+    if (!userId) {
+      setProfileStatus(null);
       setCheckingProfile(false);
+      setProfileError(false);
       return;
     }
 
@@ -23,26 +35,37 @@ export default function Index() {
 
     const checkProfile = async () => {
       setCheckingProfile(true);
+      setProfileStatus(null);
+      setProfileError(false);
 
       const { data, error } = await supabase
         .from("profiles")
-        .select("onboarding_completed")
-        .eq("id", session.user.id)
+        .select("username, onboarding_completed")
+        .eq("id", userId)
         .maybeSingle();
 
       if (!mounted) return;
 
       if (error) {
         console.error("PROFILE CHECK ERROR:", error);
-        setOnboardingCompleted(false);
-      } else {
-        console.log(
-          "ONBOARDING COMPLETED:",
-          data?.onboarding_completed ?? false
-        );
-
-        setOnboardingCompleted(data?.onboarding_completed ?? false);
+        setProfileError(true);
+        setCheckingProfile(false);
+        return;
       }
+
+      const username = data?.username?.trim() || null;
+      const onboardingCompleted = data?.onboarding_completed ?? false;
+
+      console.log("PROFILE STATUS:", {
+        userId,
+        hasUsername: Boolean(username),
+        onboardingCompleted,
+      });
+
+      setProfileStatus({
+        username,
+        onboardingCompleted,
+      });
 
       setCheckingProfile(false);
     };
@@ -52,9 +75,9 @@ export default function Index() {
     return () => {
       mounted = false;
     };
-  }, [session?.user?.id]);
+  }, [userId, authLoading, retryCount]);
 
-  // Auth state is still loading
+  // 1. Wait for Supabase to restore the session.
   if (authLoading) {
     return (
       <View
@@ -69,13 +92,13 @@ export default function Index() {
     );
   }
 
-  // Not authenticated → onboarding/auth
+  // 2. Not authenticated → onboarding/auth entry.
   if (!session) {
     return <Redirect href="/(onboarding)/start" />;
   }
 
-  // Authenticated but profile is still being checked
-  if (checkingProfile || onboardingCompleted === null) {
+  // 3. Profile request is in progress.
+  if (checkingProfile || profileStatus === null && !profileError) {
     return (
       <View
         style={{
@@ -89,11 +112,39 @@ export default function Index() {
     );
   }
 
-  // Authenticated + onboarding finished → Home
-  if (onboardingCompleted) {
-    return <Redirect href="/(tabs)/home" />;
+  // 4. Profile could not be checked.
+  // Do not incorrectly treat a network/database error as missing onboarding.
+  if (profileError) {
+    return (
+      <View
+        style={{
+          flex: 1,
+          alignItems: "center",
+          justifyContent: "center",
+          padding: 24,
+        }}
+      >
+        <ActivityIndicator animating={false} />
+        <View style={{ height: 16 }} />
+        <Redirect href="/" />
+      </View>
+    );
   }
 
-  // Authenticated but onboarding isn't finished
-  return <Redirect href="/(onboarding)/start" />;
+  // A successful query with no profile row also leaves the username missing.
+  const username = profileStatus?.username;
+  const onboardingCompleted = profileStatus?.onboardingCompleted ?? false;
+
+  // 5. Authenticated but username has not been set.
+  if (!username) {
+    return <Redirect href="/(onboarding)/username" />;
+  }
+
+  // 6. Username exists, but onboarding is incomplete.
+  if (!onboardingCompleted) {
+    return <Redirect href="/(onboarding)/start" />;
+  }
+
+  // 7. Username exists and onboarding is complete → Home.
+  return <Redirect href="/(tabs)/home" />;
 }
