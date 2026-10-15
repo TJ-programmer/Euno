@@ -1,42 +1,20 @@
 /**
  * Flow — src/app/(tabs)/flow.tsx
  *
- * A cinematic, editorial curiosity feed. Cards fill the entire screen
- * edge-to-edge (no visible card frame, borders, or seams). Vertical
- * scrolling uses a native paged FlatList — the same mechanism behind
- * Instagram Reels / YouTube Shorts — so momentum, snapping, and
- * interrupted swipes all feel native instead of hand-rolled and jumpy.
- * Swiping left (or tapping "Why?") dives deeper into the current card;
- * swiping left again once expanded advances to the next connected
- * discovery. Swiping right backs out of an expanded card.
+ * Reels/Shorts × slideshow × flip-cards:
+ *  - Vertical: native paged FlatList, one discovery per page.
+ *  - Inside a discovery: up to 7 steps. The backend model is
+ *    Hook → Tension → Reveal → Why → Surprise → Connection → Takeaway, but the
+ *    reader sees a curiosity journey instead:
+ *    Curious? → But wait… → Turns out → Here's why → Plot twist → Zoom out →
+ *    Remember this.
+ *    Tap right / swipe left = next step, tap left / swipe right = previous.
+ *  - After the last step: the "next rabbit hole" prompt advances to the next
+ *    discovery.
+ *  - Background = UI template chosen from the DB label (see labelTemplates.tsx),
+ *    dimmed by a scrim so the text always dominates.
  *
- * The horizontal "go deeper" / "back" swipe now tracks the finger live
- * (rubber-banded drag + a slight tilt), flings the rest of the way once
- * a swipe is committed, and cross-fades the card's content directionally
- * (old content exits toward the swipe direction, new content enters from
- * the opposite side) instead of popping instantly. A layout transition
- * smooths the height change when the description is swapped for the
- * expanded "Why" block.
- *
- * Reuses the existing Euno theme system (Colors / Fonts / Spacing) and
- * follows the same visual language as the Home screen (serif headlines,
- * glass surfaces, accent-tinted UI).
- *
- * Dependencies used beyond what was listed as "existing stack":
- *   - expo-linear-gradient  (atmospheric gradients, card scrims, glow)
- *   - expo-haptics          (tactile feedback on dive/expand/collapse)
- *   - react-native-gesture-handler (Gesture.Pan / GestureDetector, for the
- *     horizontal "go deeper" swipe only — vertical paging is native)
- *   - react-native-safe-area-context (safe area insets)
- * These are standard Expo/RN ecosystem packages. If any aren't installed:
- *   npx expo install expo-linear-gradient expo-haptics react-native-gesture-handler react-native-safe-area-context
- *
- * The existing bottom navigation is NOT touched or recreated here — this
- * file only renders the Flow tab's content, on top of it.
- *
- * DATA: all content comes from `discoveryService` (src/services/discoveryService.ts).
- * It's mock data today; swapping in a real backend only means editing that
- * one file — nothing here needs to change.
+ * Card surfaces are always dark, so text colours are fixed light values.
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -45,10 +23,9 @@ import {
   StyleSheet,
   Text,
   View,
-  Image,
-  useColorScheme,
   useWindowDimensions,
   type FlatList,
+  type LayoutChangeEvent,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from "react-native";
@@ -58,16 +35,11 @@ import Animated, {
   Easing,
   Extrapolation,
   FadeInUp,
-  FadeOut,
-  LinearTransition,
-  SlideInRight,
-  SlideOutLeft,
   interpolate,
   runOnJS,
   useAnimatedScrollHandler,
   useAnimatedStyle,
   useSharedValue,
-  withSequence,
   withSpring,
   withTiming,
 } from "react-native-reanimated";
@@ -75,101 +47,114 @@ import { LinearGradient } from "expo-linear-gradient";
 import * as Haptics from "expo-haptics";
 import { SlidersHorizontal } from "lucide-react-native";
 
-import { Colors, Fonts, Spacing } from "@/constants/theme";
-import { discoveryService, type Discovery } from "@/services/discoveryService";
-
-// ─────────────────────────────────────────────────────────────────────────
-// Types
-// ─────────────────────────────────────────────────────────────────────────
-
-type Theme = typeof Colors.light;
+import { Fonts, Spacing } from "@/constants/theme";
+import {
+  discoveryService,
+  type Discovery,
+  type FlowStep,
+  type FlowStepKey,
+} from "@/services/discoveryService";
+import {
+  LabelBackdrop,
+  resolveTemplate,
+  withAlpha,
+  type LabelTemplate,
+} from "@/components/flow/labelTemplates";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────────────────────────────
 
-const TOPIC_FILTERS = ["All", "Technology", "Psychology", "Science", "Nature"] as const;
+const TOPIC_FILTERS = ["All", "Technology", "Psychology", "Science", "Nature", "Health"] as const;
 
-/** Distance threshold to commit to a horizontal "go deeper" / "back" swipe. */
-const HORIZONTAL_SWIPE_THRESHOLD = 70;
-/** Velocity threshold to commit to a fast horizontal flick. */
-const HORIZONTAL_VELOCITY_THRESHOLD = 650;
+const TEXT = "#FFFFFF";
+const TEXT_DIM = "rgba(255,255,255,0.74)";
+const TEXT_FAINT = "rgba(255,255,255,0.5)";
+const HAIRLINE = "rgba(255,255,255,0.22)";
+
+/** Soft shadow so text stays crisp over any animated backdrop. */
+const SHADOW = {
+  textShadowColor: "rgba(0,0,0,0.5)",
+  textShadowOffset: { width: 0, height: 2 },
+  textShadowRadius: 14,
+} as const;
+
+const SWIPE_DISTANCE = 60;
+const SWIPE_VELOCITY = 600;
 /** Rough reserved space for the existing bottom tab bar — tune to match its real height. */
 const BOTTOM_NAV_SPACE = 88;
 
+/**
+ * UI vocabulary. The backend keys (hook, tension, reveal…) are our mental
+ * model; the reader gets a curiosity journey instead.
+ */
+const STEP_META: Record<FlowStepKey, { eyebrow: string; glyph: string }> = {
+  hook: { eyebrow: "CURIOUS?", glyph: "✦" },
+  tension: { eyebrow: "BUT WAIT…", glyph: "≈" },
+  reveal: { eyebrow: "TURNS OUT", glyph: "◉" },
+  why: { eyebrow: "HERE'S WHY", glyph: "↳" },
+  surprise: { eyebrow: "PLOT TWIST", glyph: "✺" },
+  connection: { eyebrow: "ZOOM OUT", glyph: "∞" },
+  takeaway: { eyebrow: "REMEMBER THIS", glyph: "✓" },
+};
+
 // ─────────────────────────────────────────────────────────────────────────
-// Small building blocks
+// Text helpers
 // ─────────────────────────────────────────────────────────────────────────
 
-function FlowHeader({
-  theme,
-  onFilterPress,
-}: {
-  theme: Theme;
-  onFilterPress: () => void;
-}) {
+function splitSentences(text: string): string[] {
+  return (text.match(/[^.!?]+[.!?]+(?:\s|$)|[^.!?]+$/g) ?? [text]).map((s) => s.trim()).filter(Boolean);
+}
+
+/** "Statement. Question?" → big question with the statement as a lead-in. */
+function splitHook(body: string): { lead: string; question: string } {
+  const s = splitSentences(body);
+  const last = s[s.length - 1];
+  if (s.length > 1 && last.endsWith("?")) return { lead: s.slice(0, -1).join(" "), question: last };
+  return { lead: "", question: body };
+}
+
+/** Scales a font size down for long text so big type still fits on screen. */
+function fit(text: string, size: number, lineHeight: number) {
+  const n = text.length;
+  const k = n < 70 ? 1 : n < 120 ? 0.88 : n < 180 ? 0.78 : 0.68;
+  return { fontSize: Math.round(size * k), lineHeight: Math.round(lineHeight * k) };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Header
+// ─────────────────────────────────────────────────────────────────────────
+
+function FlowHeader({ onFilterPress }: { onFilterPress: () => void }) {
   return (
     <View style={styles.header}>
       <View style={styles.headerTopRow}>
-        <Text style={[styles.brand, { color: theme.text, fontFamily: Fonts.serif }]}>
-          ✦ Flow
-        </Text>
+        <Text style={[styles.brand, { fontFamily: Fonts.serif }]}>✦ Flow</Text>
         <Pressable
           onPress={onFilterPress}
           hitSlop={10}
-          style={({ pressed }) => [
-            styles.filterButton,
-            { borderColor: "rgba(255,255,255,0.25)" },
-            pressed && styles.pressedSubtle,
-          ]}
+          style={({ pressed }) => [styles.filterButton, pressed && styles.pressedSubtle]}
         >
-          <SlidersHorizontal size={16} color={theme.textSecondary} />
+          <SlidersHorizontal size={16} color={TEXT_DIM} />
         </Pressable>
       </View>
-      <Text style={[styles.headerSubtitle, { color: theme.textSecondary, fontFamily: Fonts.sans }]}>
-        Follow your curiosity.
-      </Text>
+      <Text style={[styles.headerSubtitle, { fontFamily: Fonts.sans }]}>Follow your curiosity.</Text>
     </View>
   );
 }
 
-function FlowTopics({
-  theme,
-  active,
-  onSelect,
-}: {
-  theme: Theme;
-  active: string;
-  onSelect: (topic: string) => void;
-}) {
+function FlowTopics({ active, onSelect }: { active: string; onSelect: (t: string) => void }) {
   return (
     <View style={styles.topicsRow}>
       {TOPIC_FILTERS.map((topic) => {
         const isActive = topic === active;
         return (
-          <Pressable
-            key={topic}
-            onPress={() => onSelect(topic)}
-            style={({ pressed }) => [pressed && styles.pressedSubtle]}
-          >
-            {isActive ? (
-              <LinearGradient
-                colors={[theme.onboardingAccent, theme.onboardingAccent + "99"]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.topicChip}
-              >
-                <Text style={[styles.topicChipText, { color: theme.background, fontFamily: Fonts.sans }]}>
-                  {topic}
-                </Text>
-              </LinearGradient>
-            ) : (
-              <View style={[styles.topicChip, styles.topicChipInactive, { borderColor: "rgba(255,255,255,0.25)" }]}>
-                <Text style={[styles.topicChipText, { color: theme.textSecondary, fontFamily: Fonts.sans }]}>
-                  {topic}
-                </Text>
-              </View>
-            )}
+          <Pressable key={topic} onPress={() => onSelect(topic)} style={({ pressed }) => [pressed && styles.pressedSubtle]}>
+            <View style={[styles.topicChip, isActive ? styles.topicChipActive : styles.topicChipInactive]}>
+              <Text style={[styles.topicChipText, { color: isActive ? "#0B0814" : TEXT_DIM, fontFamily: Fonts.sans }]}>
+                {topic}
+              </Text>
+            </View>
           </Pressable>
         );
       })}
@@ -177,389 +162,412 @@ function FlowTopics({
   );
 }
 
-/** The tactile "✦ Why? →" pill — same action as swiping right. */
-function CuriosityAction({ theme, onPress }: { theme: Theme; onPress: () => void }) {
-  return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.whyPill,
-        { borderColor: "rgba(255,255,255,0.3)" },
-        pressed && styles.whyPillPressed,
-      ]}
-    >
-      <Text style={[styles.whyPillText, { color: theme.text, fontFamily: Fonts.sans }]}>✦ Why? →</Text>
-    </Pressable>
-  );
-}
+// ─────────────────────────────────────────────────────────────────────────
+// Step bodies — each step has its own visual treatment, text always the hero
+// ─────────────────────────────────────────────────────────────────────────
 
-/** Subtle, editorial — not quiz buttons. All three currently advance to the next discovery (see branches note on the Discovery type). */
-function CuriosityBranches({
-  theme,
-  branches,
-  onSelect,
+function StepBody({
+  step,
+  index,
+  total,
+  template,
+  claimCount,
 }: {
-  theme: Theme;
-  branches: NonNullable<Discovery["branches"]>;
-  onSelect: () => void;
+  step: FlowStep;
+  index: number;
+  total: number;
+  template: LabelTemplate;
+  claimCount: number;
 }) {
-  const items: { key: "why" | "how" | "whatIf"; label: string }[] = [
-    { key: "why", label: "Why?" },
-    { key: "how", label: "How?" },
-    { key: "whatIf", label: "What if?" },
-  ];
+  const accent = template.accent;
+  const meta = STEP_META[step.key];
 
-  return (
-    <View style={styles.branchRow}>
-      {items.map((item, i) => (
-        <React.Fragment key={item.key}>
-          <Pressable onPress={onSelect} style={({ pressed }) => [pressed && styles.pressedSubtle]}>
-            <Text style={[styles.branchText, { color: theme.text, fontFamily: Fonts.sans }]}>{item.label}</Text>
-          </Pressable>
-          {i < items.length - 1 && (
-            <Text style={[styles.branchDivider, { color: theme.textSecondary }]}>·</Text>
-          )}
-        </React.Fragment>
-      ))}
+  const eyebrow = (
+    <View style={styles.eyebrowRow}>
+      <Text style={[styles.eyebrowGlyph, { color: accent }]}>{meta.glyph}</Text>
+      <Text style={[styles.eyebrowText, { color: accent, fontFamily: Fonts.sans }]}>{meta.eyebrow}</Text>
+      <Text style={[styles.eyebrowCount, { fontFamily: Fonts.sans }]}>
+        {index + 1}/{total}
+      </Text>
     </View>
   );
-}
 
-/**
- * Normal (non-connection) card content: meta → title → description/expansion → action.
- * Wrapped in an Animated.View with a `layout` transition so the reflow
- * caused by swapping the description for the expanded block (this whole
- * block is bottom-anchored via `justifyContent: "flex-end"`) animates
- * smoothly instead of jumping. The description and expanded block each
- * get directional enter/exit animations so the swap reads as one
- * continuous motion in the direction of the swipe, rather than a pop.
- */
-function DiscoveryCardBody({
-  theme,
-  discovery,
-  expanded,
-  onToggleExpand,
-  onAdvance,
-}: {
-  theme: Theme;
-  discovery: Discovery;
-  expanded: boolean;
-  onToggleExpand: () => void;
-  onAdvance: () => void;
-}) {
-  return (
-    <Animated.View style={styles.cardContent} layout={LinearTransition.duration(220).easing(Easing.out(Easing.cubic))}>
-      <Animated.Text
-        entering={FadeInUp.delay(40).duration(360)}
-        style={[styles.cardMeta, { color: theme.textSecondary, fontFamily: Fonts.sans }]}
-      >
-        {discovery.category.toUpperCase()} · {discovery.readTime}
-      </Animated.Text>
+  let content: React.ReactNode;
 
-      <Animated.Text
-        entering={FadeInUp.delay(110).duration(420)}
-        style={[styles.cardTitle, { color: theme.text, fontFamily: Fonts.serif }]}
-      >
-        {discovery.title}
-      </Animated.Text>
-
-      {!expanded && (
-        <Animated.Text
-          key="description"
-          entering={FadeInUp.delay(180).duration(420)}
-          exiting={SlideOutLeft.duration(180).easing(Easing.in(Easing.cubic))}
-          style={[styles.cardDescription, { color: theme.textSecondary, fontFamily: Fonts.sans }]}
-        >
-          {discovery.description}
-        </Animated.Text>
-      )}
-
-      {expanded && discovery.question && (
-        <Animated.View
-          key="expanded"
-          entering={SlideInRight.duration(260).easing(Easing.out(Easing.cubic))}
-          exiting={FadeOut.duration(120)}
-          style={styles.expandedBlock}
-        >
-          <Text style={[styles.expandedLabel, { color: theme.onboardingAccent, fontFamily: Fonts.sans }]}>
-            Why
+  switch (step.key) {
+    case "hook": {
+      const { lead, question } = splitHook(step.body);
+      content = (
+        <>
+          {lead ? <Text style={[styles.hookLead, SHADOW, { fontFamily: Fonts.sans }]}>{lead}</Text> : null}
+          <Text style={[styles.hookQuestion, SHADOW, fit(question, 46, 54), { fontFamily: Fonts.serif }]}>
+            {question}
           </Text>
-          <Text style={[styles.expandedText, { color: theme.text, fontFamily: Fonts.sans }]}>
-            {discovery.question}
-          </Text>
-        </Animated.View>
-      )}
+        </>
+      );
+      break;
+    }
 
-      <Animated.View
-        entering={FadeInUp.delay(expanded ? 70 : 250).duration(400)}
-        style={styles.actionRow}
-      >
-        {!expanded ? (
-          <CuriosityAction theme={theme} onPress={onToggleExpand} />
-        ) : discovery.branches ? (
-          <CuriosityBranches theme={theme} branches={discovery.branches} onSelect={onAdvance} />
-        ) : (
-          <Pressable
-            onPress={onAdvance}
-            style={({ pressed }) => [styles.exploreDeeper, pressed && styles.pressedSubtle]}
+    case "tension":
+      content = (
+        <View style={[styles.tensionWrap, { borderLeftColor: accent }]}>
+          <Text style={[styles.tensionText, SHADOW, fit(step.body, 30, 40), { fontFamily: Fonts.serif }]}>
+            {step.body}
+          </Text>
+        </View>
+      );
+      break;
+
+    case "reveal":
+      content = (
+        <>
+          <View style={[styles.revealRule, { backgroundColor: accent }]} />
+          <Text
+            style={[
+              styles.revealText,
+              fit(step.body, 36, 47),
+              { fontFamily: Fonts.serif, textShadowColor: withAlpha(accent, 0.45) },
+            ]}
           >
-            <Text style={[styles.exploreDeeperText, { color: theme.text, fontFamily: Fonts.sans }]}>
-              Explore deeper →
-            </Text>
-          </Pressable>
-        )}
-      </Animated.View>
+            {step.body}
+          </Text>
+        </>
+      );
+      break;
 
-      {!expanded && (
-        <Text style={[styles.swipeHint, { color: theme.textSecondary, fontFamily: Fonts.sans }]}>
-          swipe left for more ✦
-        </Text>
-      )}
+    case "why":
+      content = (
+        <View style={styles.whyPanel}>
+          {splitSentences(step.body).map((sentence, i) => (
+            <View key={i} style={[styles.whyRow, i > 0 && { marginTop: Spacing.three }]}>
+              <View style={[styles.whyDot, { borderColor: accent }]}>
+                <Text style={[styles.whyDotText, { color: accent, fontFamily: Fonts.sans }]}>{i + 1}</Text>
+              </View>
+              <Text style={[styles.whyText, SHADOW, { fontFamily: Fonts.sans }]}>{sentence}</Text>
+            </View>
+          ))}
+        </View>
+      );
+      break;
+
+    case "surprise":
+      content = (
+        <View style={[styles.surpriseCard, { borderColor: withAlpha(accent, 0.5) }]}>
+          <Text style={[styles.surpriseBang, { color: withAlpha(accent, 0.09), fontFamily: Fonts.serif }]}>!</Text>
+          <Text style={[styles.surpriseText, SHADOW, fit(step.body, 28, 38), { fontFamily: Fonts.serif }]}>
+            {step.body}
+          </Text>
+        </View>
+      );
+      break;
+
+    case "connection":
+      content = (
+        <>
+          <View style={styles.nodesRow}>
+            <View style={[styles.node, { backgroundColor: accent }]} />
+            <View style={[styles.nodeLine, { backgroundColor: withAlpha(accent, 0.6) }]} />
+            <View style={[styles.node, { borderColor: accent, borderWidth: 2 }]} />
+          </View>
+          <Text style={[styles.connectionText, SHADOW, fit(step.body, 26, 36), { fontFamily: Fonts.sans }]}>
+            {step.body}
+          </Text>
+        </>
+      );
+      break;
+
+    case "takeaway":
+    default:
+      content = (
+        <LinearGradient
+          colors={[withAlpha(accent, 0.28), withAlpha(accent, 0.06)]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={[styles.takeawayCard, { borderColor: withAlpha(accent, 0.5) }]}
+        >
+          <Text style={[styles.takeawayText, SHADOW, fit(step.body, 31, 42), { fontFamily: Fonts.serif }]}>
+            {step.body}
+          </Text>
+          {claimCount > 0 && (
+            <Text style={[styles.takeawayFoot, { fontFamily: Fonts.sans }]}>
+              Grounded in {claimCount} supporting {claimCount === 1 ? "claim" : "claims"}
+            </Text>
+          )}
+        </LinearGradient>
+      );
+  }
+
+  return (
+    <Animated.View entering={FadeInUp.duration(320)}>
+      {eyebrow}
+      {content}
     </Animated.View>
   );
 }
 
-/** Special "Euno noticed a connection" layout. */
-function ConnectionContent({
-  theme,
-  discovery,
-  onAdvance,
+/**
+ * Flip-card stage. When `step` changes the current content flips away in the
+ * direction of travel, the content swaps while it's edge-on (invisible), and
+ * the new step flips in from the opposite side. Kept gentle so the text, not
+ * the motion, carries the moment.
+ */
+function StepStage({
+  steps,
+  step,
+  template,
+  claimCount,
 }: {
-  theme: Theme;
-  discovery: Discovery;
-  onAdvance: () => void;
+  steps: FlowStep[];
+  step: number;
+  template: LabelTemplate;
+  claimCount: number;
 }) {
-  const tags = discovery.connectionTags ?? ["Idea A", "Idea B"];
+  const rot = useSharedValue(0);
+  const prevStep = useRef(step);
+  const [shown, setShown] = useState(step);
+
+  useEffect(() => {
+    if (step === prevStep.current) return;
+    const dir = step > prevStep.current ? 1 : -1;
+    prevStep.current = step;
+    rot.value = withTiming(-dir, { duration: 130, easing: Easing.in(Easing.quad) }, (finished) => {
+      if (finished) {
+        runOnJS(setShown)(step);
+        rot.value = dir;
+        rot.value = withTiming(0, { duration: 230, easing: Easing.out(Easing.cubic) });
+      }
+    });
+  }, [step, rot]);
+
+  const flipStyle = useAnimatedStyle(() => ({
+    opacity: interpolate(Math.abs(rot.value), [0, 0.8, 1], [1, 0.2, 0], Extrapolation.CLAMP),
+    transform: [{ perspective: 1000 }, { translateX: rot.value * 24 }, { rotateY: `${rot.value * 45}deg` }],
+  }));
+
+  const idx = Math.min(shown, steps.length - 1);
+
   return (
-    <View style={styles.cardContent}>
-      <Animated.Text
-        entering={FadeInUp.delay(40).duration(360)}
-        style={[styles.cardMeta, { color: theme.onboardingAccent, fontFamily: Fonts.sans }]}
-      >
-        ✦ A CONNECTION
-      </Animated.Text>
+    <Animated.View style={[styles.stage, flipStyle]} pointerEvents="none">
+      <StepBody
+        key={idx}
+        step={steps[idx]}
+        index={idx}
+        total={steps.length}
+        template={template}
+        claimCount={claimCount}
+      />
+    </Animated.View>
+  );
+}
 
-      <Animated.Text
-        entering={FadeInUp.delay(100).duration(400)}
-        style={[styles.connectionLead, { color: theme.textSecondary, fontFamily: Fonts.sans }]}
-      >
-        You were curious about
-      </Animated.Text>
+// ─────────────────────────────────────────────────────────────────────────
+// Footer: progress + hint / next-rabbit-hole CTA
+// ─────────────────────────────────────────────────────────────────────────
 
-      <Animated.View entering={FadeInUp.delay(160).duration(400)} style={styles.connectionTagsRow}>
-        <Text style={[styles.connectionTag, { color: theme.text, fontFamily: Fonts.serif }]}>{tags[0]}</Text>
-        <Text style={[styles.connectionPlus, { color: theme.textSecondary }]}>+</Text>
-        <Text style={[styles.connectionTag, { color: theme.text, fontFamily: Fonts.serif }]}>{tags[1]}</Text>
-      </Animated.View>
-
-      <Animated.Text
-        entering={FadeInUp.delay(230).duration(420)}
-        style={[styles.cardDescription, { color: theme.textSecondary, fontFamily: Fonts.sans }]}
-      >
-        {discovery.description}
-      </Animated.Text>
-
-      <Animated.View entering={FadeInUp.delay(300).duration(400)} style={styles.actionRow}>
-        <Pressable
-          onPress={onAdvance}
-          style={({ pressed }) => [styles.exploreDeeper, pressed && styles.pressedSubtle]}
-        >
-          <Text style={[styles.exploreDeeperText, { color: theme.text, fontFamily: Fonts.sans }]}>
-            Continue →
-          </Text>
-        </Pressable>
-      </Animated.View>
+function Segment({ state, accent }: { state: "done" | "current" | "todo"; accent: string }) {
+  const fill = useSharedValue(state === "todo" ? 0 : 1);
+  useEffect(() => {
+    fill.value = withTiming(state === "todo" ? 0 : 1, { duration: state === "todo" ? 150 : 380 });
+  }, [state, fill]);
+  const fillStyle = useAnimatedStyle(() => ({ width: `${fill.value * 100}%` }));
+  return (
+    <View style={styles.segTrack}>
+      <Animated.View
+        style={[styles.segFill, { backgroundColor: accent, opacity: state === "current" ? 1 : 0.55 }, fillStyle]}
+      />
     </View>
   );
 }
 
-/**
- * One page in the feed. Sized to fill the screen exactly (so FlatList's
- * native paging can snap cleanly, the way Reels/Shorts do). Owns:
- *  - a subtle scroll-driven scale/opacity ("focus") tied to `scrollY`,
- *    computed on the UI thread so it stays glued to the native scroll
- *    with zero bridge lag,
- *  - a live-tracked horizontal drag (`dragX`) that rubber-bands under the
- *    finger with a slight tilt, then either springs back or flings the
- *    rest of the way and commits — this is what removes the "friction"
- *    feeling, since the card now visibly responds the instant you touch
- *    it instead of only reacting once a threshold is crossed, and
- *  - the horizontal "go deeper" / "back" gesture, which is deliberately
- *    scoped to this single item rather than the whole list so it never
- *    fights the vertical native pager.
- */
+function CardFooter({
+  steps,
+  step,
+  template,
+  nextCuriosity,
+  isLastDiscovery,
+  onAdvance,
+}: {
+  steps: FlowStep[];
+  step: number;
+  template: LabelTemplate;
+  nextCuriosity?: string;
+  isLastDiscovery: boolean;
+  onAdvance: () => void;
+}) {
+  const isLast = step >= steps.length - 1;
+
+  return (
+    <View style={styles.footer} pointerEvents="box-none">
+      <View style={styles.segRow} pointerEvents="none">
+        {steps.map((s, i) => (
+          <Segment key={s.key} accent={template.accent} state={i < step ? "done" : i === step ? "current" : "todo"} />
+        ))}
+      </View>
+
+      {isLast ? (
+        <Pressable
+          onPress={onAdvance}
+          style={({ pressed }) => [styles.curiosityPill, { borderColor: withAlpha(template.accent, 0.5) }, pressed && styles.pressedSubtle]}
+        >
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.curiosityLabel, { color: template.accent, fontFamily: Fonts.sans }]}>
+              {isLastDiscovery ? "YOU'RE CAUGHT UP" : "NEXT RABBIT HOLE"}
+            </Text>
+            <Text numberOfLines={3} style={[styles.curiosityText, { fontFamily: Fonts.sans }]}>
+              {nextCuriosity ?? "On to the next discovery"}
+            </Text>
+          </View>
+          <Text style={[styles.curiosityArrow, { color: template.accent }]}>↑</Text>
+        </Pressable>
+      ) : (
+        <Text style={[styles.hint, { fontFamily: Fonts.sans }]} pointerEvents="none">
+          tap to keep going
+        </Text>
+      )}
+    </View>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// One page of the feed
+// ─────────────────────────────────────────────────────────────────────────
+
 function FlowCardItem({
   discovery,
   index,
   scrollY,
-  dimensionStyle,
-  theme,
-  expanded,
-  onToggleExpand,
+  width,
+  height,
+  topInset,
+  active,
+  isLastDiscovery,
   onAdvance,
 }: {
   discovery: Discovery;
   index: number;
   scrollY: ReturnType<typeof useSharedValue<number>>;
-  dimensionStyle: { width: number; height: number };
-  theme: Theme;
-  expanded: boolean;
-  /** Toggles this card's expanded state (used by the "Why?" pill and both swipe directions). */
-  onToggleExpand: () => void;
-  /** Always moves to the next discovery (branch pills, "Explore deeper", connection "Continue"). */
+  width: number;
+  height: number;
+  topInset: number;
+  active: boolean;
+  isLastDiscovery: boolean;
   onAdvance: () => void;
 }) {
-  const pulse = useSharedValue(1);
+  const template = useMemo(() => resolveTemplate(discovery.label, discovery.topics), [discovery.label, discovery.topics]);
+  const total = discovery.steps.length;
+
+  const [step, setStep] = useState(0);
+  const stepRef = useRef(0);
+  const stepSV = useSharedValue(0);
   const dragX = useSharedValue(0);
-  const { width, height } = dimensionStyle;
-  const gradientColors = discovery.gradient ?? (["#171227", "#05040c"] as [string, string]);
 
-  const pulseFeedback = useCallback(() => {
-    pulse.value = withSequence(withTiming(1.015, { duration: 90 }), withTiming(1, { duration: 160 }));
+  const setBoth = (n: number) => {
+    stepRef.current = n;
+    stepSV.value = n;
+    setStep(n);
+  };
+
+  /** +1 = forward (next step, or next discovery after the last step), -1 = back. */
+  const go = useCallback(
+    (dir: 1 | -1) => {
+      const cur = stepRef.current;
+      if (dir === 1) {
+        if (cur >= total - 1) {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+          onAdvance();
+          return;
+        }
+        Haptics.selectionAsync().catch(() => {});
+        setBoth(cur + 1);
+      } else if (cur > 0) {
+        Haptics.selectionAsync().catch(() => {});
+        setBoth(cur - 1);
+      }
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    [total, onAdvance]
+  );
 
-  // Swipe left (once the fling-to-commit animation finishes): expand if
-  // collapsed; if already expanded, dive into the next discovery. Haptics
-  // and the "commit" motion now live in the gesture's onEnd, so this stays
-  // a plain state transition.
-  const handleDeeperGesture = useCallback(() => {
-    if (!expanded) {
-      onToggleExpand();
-    } else {
-      onAdvance();
-    }
-  }, [expanded, onToggleExpand, onAdvance]);
-
-  // Swipe right (once committed): back out of an expanded card. No-op when
-  // already collapsed.
-  const handleBackGesture = useCallback(() => {
-    if (!expanded) return;
-    onToggleExpand();
-  }, [expanded, onToggleExpand]);
-
-  const handleToggleExpandTap = useCallback(() => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-    pulseFeedback();
-    onToggleExpand();
-  }, [onToggleExpand, pulseFeedback]);
-
-  // Horizontal drag → go deeper (right) or back (left). Native vertical
-  // paging on the parent FlatList handles up/down, so this gesture fails
-  // fast on vertical movement and never competes with the scroll view.
-  //
-  // onUpdate tracks the finger live with rubber-band resistance (heavier
-  // resistance going "back" when there's nothing to back out of, so it
-  // doesn't feel like a dead swipe). onEnd either springs back to center
-  // (uncommitted) or flings the card the rest of the way off-screen before
-  // triggering the state change — so the content swap always happens
-  // mid-motion instead of as an abrupt pop.
-  const horizontalPan = useMemo(
+  // Horizontal swipe = slideshow. Content tracks the finger with rubber-band
+  // resistance, then springs back; the flip does the transition.
+  const pan = useMemo(
     () =>
       Gesture.Pan()
         .maxPointers(1)
-        .activeOffsetX([-16, 16])
-        .failOffsetY([-12, 12])
+        .activeOffsetX([-14, 14])
+        .failOffsetY([-14, 14])
         .onUpdate((e) => {
-          // Deeper is now right-to-left (negative translationX gets full
-          // travel); dragging right (backing out) is resisted, and more so
-          // when collapsed since there's nothing to back out of.
           const raw = e.translationX;
-          dragX.value = raw <= 0 ? raw * 0.55 : raw * (expanded ? 0.55 : 0.15);
+          const atStart = stepSV.value <= 0;
+          dragX.value = raw * (raw < 0 ? 0.5 : atStart ? 0.15 : 0.5);
         })
         .onEnd((e) => {
-          const passedDistance = Math.abs(e.translationX) > HORIZONTAL_SWIPE_THRESHOLD;
-          const passedVelocity = Math.abs(e.velocityX) > HORIZONTAL_VELOCITY_THRESHOLD;
-          const committed = passedDistance || passedVelocity;
-
-          if (committed && e.translationX < 0) {
-            runOnJS(Haptics.impactAsync)(Haptics.ImpactFeedbackStyle.Medium);
-            dragX.value = withTiming(-width * 0.35, { duration: 140 }, (finished) => {
-              dragX.value = 0;
-              if (finished) runOnJS(handleDeeperGesture)();
-            });
-          } else if (committed) {
-            runOnJS(Haptics.selectionAsync)();
-            dragX.value = withTiming(width * 0.35, { duration: 120 }, (finished) => {
-              dragX.value = 0;
-              if (finished) runOnJS(handleBackGesture)();
-            });
-          } else {
-            dragX.value = withSpring(0, { damping: 18, stiffness: 220 });
-          }
+          const committed = Math.abs(e.translationX) > SWIPE_DISTANCE || Math.abs(e.velocityX) > SWIPE_VELOCITY;
+          if (committed) runOnJS(go)(e.translationX < 0 ? 1 : -1);
+        })
+        .onFinalize(() => {
+          dragX.value = withSpring(0, { damping: 20, stiffness: 240 });
         }),
-    [handleDeeperGesture, handleBackGesture, expanded, width, dragX]
+    [go, dragX, stepSV]
   );
 
-  // Scroll-linked "focus" effect (scale/opacity vs. neighbouring pages)
-  // combined with the live drag transform (translateX + a slight tilt,
-  // fading slightly as it travels) — driven straight off shared values on
-  // the UI thread, so both track the finger/momentum with no extra
-  // latency (the actual smoothness of vertical paging comes from the
-  // FlatList's own native paging; this is polish on top of it).
-  const animatedStyle = useAnimatedStyle(() => {
-    const inputRange = [(index - 1) * height, index * height, (index + 1) * height];
-    const scale = interpolate(scrollY.value, inputRange, [0.94, 1, 0.94], Extrapolation.CLAMP);
-    const opacity = interpolate(scrollY.value, inputRange, [0.6, 1, 0.6], Extrapolation.CLAMP);
-
-    const dragProgress = interpolate(dragX.value, [-width, 0, width], [-1, 0, 1], Extrapolation.CLAMP);
-    const dragFade = interpolate(Math.abs(dragX.value), [0, width * 0.35], [1, 0.9], Extrapolation.CLAMP);
-
+  // Scroll-linked focus effect between neighbouring pages (UI thread).
+  const cardStyle = useAnimatedStyle(() => {
+    const range = [(index - 1) * height, index * height, (index + 1) * height];
     return {
-      transform: [
-        { translateX: dragX.value },
-        { rotate: `${dragProgress * 4}deg` },
-        { scale: scale * pulse.value },
-      ],
-      opacity: opacity * dragFade,
+      opacity: interpolate(scrollY.value, range, [0.6, 1, 0.6], Extrapolation.CLAMP),
+      transform: [{ scale: interpolate(scrollY.value, range, [0.94, 1, 0.94], Extrapolation.CLAMP) }],
     };
   });
 
-  return (
-    <GestureDetector gesture={horizontalPan}>
-      <Animated.View style={[styles.card, dimensionStyle, animatedStyle]}>
-        <View style={StyleSheet.absoluteFill}>
-          {discovery.image ? (
-            <>
-              <Image source={{ uri: discovery.image }} style={StyleSheet.absoluteFillObject} />
-              <LinearGradient
-                colors={["transparent", "rgba(5,4,12,0.55)", "rgba(5,4,12,0.92)"]}
-                style={StyleSheet.absoluteFillObject}
-              />
-            </>
-          ) : (
-            <LinearGradient
-              colors={gradientColors}
-              start={{ x: 0.15, y: 0 }}
-              end={{ x: 0.9, y: 1 }}
-              style={StyleSheet.absoluteFillObject}
-            />
-          )}
-          <LinearGradient
-            colors={["rgba(255,255,255,0.07)", "transparent"]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 0.6 }}
-            style={StyleSheet.absoluteFillObject}
-          />
-          {/* Top scrim so the floating header stays legible over any image/gradient. */}
-          <LinearGradient
-            colors={["rgba(4,3,10,0.65)", "transparent"]}
-            style={styles.topScrim}
-            pointerEvents="none"
-          />
-        </View>
+  const dragStyle = useAnimatedStyle(() => ({ transform: [{ translateX: dragX.value }] }));
 
-        {discovery.isConnection ? (
-          <ConnectionContent theme={theme} discovery={discovery} onAdvance={onAdvance} />
-        ) : (
-          <DiscoveryCardBody
-            theme={theme}
-            discovery={discovery}
-            expanded={expanded}
-            onToggleExpand={handleToggleExpandTap}
-            onAdvance={onAdvance}
+  return (
+    <GestureDetector gesture={pan}>
+      <Animated.View style={[styles.card, { width, height }, cardStyle]}>
+        <LabelBackdrop template={template} active={active} step={step} stepCount={total} />
+
+        {/* Text-first scrim: quiets the animated backdrop so the words dominate. */}
+        <LinearGradient
+          colors={["rgba(3,2,8,0.30)", "rgba(3,2,8,0.52)", "rgba(3,2,8,0.5)"]}
+          locations={[0, 0.5, 1]}
+          style={StyleSheet.absoluteFill}
+          pointerEvents="none"
+        />
+
+        {/* Story-style tap zones (left third = back, rest = forward). Content above is pointerEvents="none" so taps fall through. */}
+        <Pressable style={[styles.tapZone, { left: 0, width: "32%" }]} onPress={() => go(-1)} />
+        <Pressable style={[styles.tapZone, { left: "32%", right: 0 }]} onPress={() => go(1)} />
+
+        <Animated.View
+          style={[styles.content, { paddingTop: topInset + Spacing.two }, dragStyle]}
+          pointerEvents="box-none"
+        >
+          <View pointerEvents="none">
+            <View style={styles.metaRow}>
+              <View style={[styles.labelChip, { borderColor: withAlpha(template.accent, 0.4) }]}>
+                <Text style={[styles.labelChipText, { color: template.accent, fontFamily: Fonts.sans }]}>
+                  {template.glyph} {discovery.label.toUpperCase()}
+                </Text>
+              </View>
+              <Text style={[styles.readTime, { fontFamily: Fonts.sans }]}>{discovery.readTime}</Text>
+            </View>
+            <Text numberOfLines={1} style={[styles.metaTitle, { fontFamily: Fonts.sans }]}>
+              {discovery.title}
+            </Text>
+          </View>
+
+          <StepStage steps={discovery.steps} step={step} template={template} claimCount={discovery.claimCount} />
+
+          <CardFooter
+            steps={discovery.steps}
+            step={step}
+            template={template}
+            nextCuriosity={discovery.nextCuriosity}
+            isLastDiscovery={isLastDiscovery}
+            onAdvance={() => go(1)}
           />
-        )}
+        </Animated.View>
       </Animated.View>
     </GestureDetector>
   );
@@ -570,37 +578,39 @@ function FlowCardItem({
 // ─────────────────────────────────────────────────────────────────────────
 
 export default function FlowScreen() {
-  const scheme = useColorScheme() ?? "light";
-  const theme = Colors[scheme];
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
 
   const [activeFilter, setActiveFilter] = useState<string>("All");
   const [deck, setDeck] = useState<Discovery[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const [activeIndex, setActiveIndex] = useState(0);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [headerHeight, setHeaderHeight] = useState(insets.top + 150);
 
   const listRef = useRef<FlatList<Discovery>>(null);
   const scrollY = useSharedValue(0);
   const activeIndexRef = useRef(0);
 
-  // Load the deck through the swappable data service whenever the topic changes.
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    setError(null);
     discoveryService
       .getDiscoveries(activeFilter)
       .then((items) => {
         if (cancelled) return;
         setDeck(items);
         setActiveIndex(0);
-        setExpandedId(null);
+        activeIndexRef.current = 0;
         scrollY.value = 0;
         listRef.current?.scrollToOffset({ offset: 0, animated: false });
       })
-      .catch(() => {
-        if (!cancelled) setDeck([]);
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setDeck([]);
+        setError(e instanceof Error ? e.message : "Something went wrong.");
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -609,62 +619,44 @@ export default function FlowScreen() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeFilter]);
+  }, [activeFilter, reloadKey]);
 
-  // Full-bleed: each page fills the entire screen, no margins, no border.
-  const dimensionStyle = useMemo(() => ({ width, height }), [width, height]);
-
-  // Drives FlowCardItem's scroll-linked scale/opacity, on the UI thread.
   const scrollHandler = useAnimatedScrollHandler({
     onScroll: (event) => {
       scrollY.value = event.contentOffset.y;
     },
   });
 
-  /** Programmatically page to a given index — used by the "deeper"/"advance" actions. */
-  const scrollToIndex = useCallback(
-    (idx: number) => {
-      if (idx < 0 || idx >= deck.length) return;
-      listRef.current?.scrollToOffset({ offset: idx * height, animated: true });
-    },
-    [deck.length, height]
-  );
-
-  // Keep activeIndex in sync once native momentum scrolling settles, and
-  // collapse any expanded card left behind when the page actually changes
-  // (so returning to it later starts fresh — same as the old behaviour).
   const handleMomentumEnd = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
       if (height <= 0) return;
       const idx = Math.round(e.nativeEvent.contentOffset.y / height);
-      if (idx !== activeIndexRef.current) {
-        setExpandedId(null);
-      }
       activeIndexRef.current = idx;
       setActiveIndex(idx);
     },
     [height]
   );
 
-  const handleToggleExpand = useCallback((id: string) => {
-    setExpandedId((current) => (current === id ? null : id));
-  }, []);
-
-  /** Always moves forward: branch pills, "Explore deeper", connection "Continue", and swipe-right-while-expanded. */
   const handleAdvance = useCallback(
     (index: number) => {
-      setExpandedId(null);
-      scrollToIndex(index + 1);
+      if (index + 1 >= deck.length) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+        return;
+      }
+      listRef.current?.scrollToOffset({ offset: (index + 1) * height, animated: true });
     },
-    [scrollToIndex]
+    [deck.length, height]
   );
 
   const handleFilterPress = useCallback(() => {
     // TODO: wire to a real filter sheet. For now, cycle through the topic list.
     const idx = TOPIC_FILTERS.indexOf(activeFilter as (typeof TOPIC_FILTERS)[number]);
-    const nextTopic = TOPIC_FILTERS[(idx + 1) % TOPIC_FILTERS.length];
-    setActiveFilter(nextTopic);
+    setActiveFilter(TOPIC_FILTERS[(idx + 1) % TOPIC_FILTERS.length]);
   }, [activeFilter]);
+
+  const onHeaderLayout = useCallback((e: LayoutChangeEvent) => {
+    setHeaderHeight(e.nativeEvent.layout.height);
+  }, []);
 
   const renderItem = useCallback(
     ({ item, index }: { item: Discovery; index: number }) => (
@@ -672,14 +664,15 @@ export default function FlowScreen() {
         discovery={item}
         index={index}
         scrollY={scrollY}
-        dimensionStyle={dimensionStyle}
-        theme={theme}
-        expanded={expandedId === item.id}
-        onToggleExpand={() => handleToggleExpand(item.id)}
+        width={width}
+        height={height}
+        topInset={headerHeight}
+        active={index === activeIndex}
+        isLastDiscovery={index === deck.length - 1}
         onAdvance={() => handleAdvance(index)}
       />
     ),
-    [scrollY, dimensionStyle, theme, expandedId, handleToggleExpand, handleAdvance]
+    [scrollY, width, height, headerHeight, activeIndex, deck.length, handleAdvance]
   );
 
   const getItemLayout = useCallback(
@@ -693,14 +686,14 @@ export default function FlowScreen() {
 
   return (
     <GestureHandlerRootView style={styles.flex}>
-      <View style={[styles.container, { backgroundColor: theme.background }]}>
+      <View style={styles.container}>
         <Animated.FlatList
           ref={listRef}
           data={deck}
           keyExtractor={(item: Discovery) => item.id}
           renderItem={renderItem}
           getItemLayout={getItemLayout}
-          extraData={expandedId}
+          extraData={activeIndex}
           pagingEnabled
           disableIntervalMomentum
           decelerationRate="fast"
@@ -717,21 +710,29 @@ export default function FlowScreen() {
           removeClippedSubviews
           style={StyleSheet.absoluteFill}
           ListEmptyComponent={
-            <View style={[styles.card, dimensionStyle, styles.emptyCard]}>
-              <Text style={[styles.emptyState, { color: theme.textSecondary, fontFamily: Fonts.sans }]}>
-                {loading ? "Loading…" : "Nothing here yet — try another topic."}
+            <View style={[styles.emptyCard, { width, height }]}>
+              <Text style={[styles.emptyState, { fontFamily: Fonts.sans }]}>
+                {loading ? "Loading…" : error ?? "Nothing here yet — try another topic."}
               </Text>
+              {!loading && error && (
+                <Pressable
+                  onPress={() => setReloadKey((k) => k + 1)}
+                  style={({ pressed }) => [styles.retryButton, pressed && styles.pressedSubtle]}
+                >
+                  <Text style={[styles.retryText, { fontFamily: Fonts.sans }]}>Try again</Text>
+                </Pressable>
+              )}
             </View>
           }
         />
 
-        {/* Header floats above the feed; box-none so scroll/swipe gestures pass through empty areas. */}
         <View
+          onLayout={onHeaderLayout}
           style={[styles.headerFloating, { paddingTop: insets.top + Spacing.two }]}
           pointerEvents="box-none"
         >
-          <FlowHeader theme={theme} onFilterPress={handleFilterPress} />
-          <FlowTopics theme={theme} active={activeFilter} onSelect={setActiveFilter} />
+          <FlowHeader onFilterPress={handleFilterPress} />
+          <FlowTopics active={activeFilter} onSelect={setActiveFilter} />
         </View>
       </View>
     </GestureHandlerRootView>
@@ -744,114 +745,114 @@ export default function FlowScreen() {
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },
-  container: { flex: 1, overflow: "hidden" },
-
-  // Header now floats over the full-bleed feed instead of pushing it down.
-  headerFloating: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 10,
-  },
-  header: {
-    paddingHorizontal: Spacing.four,
-    paddingBottom: Spacing.three,
-  },
-  headerTopRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  brand: { fontSize: 24, fontWeight: "600" },
-  headerSubtitle: { fontSize: 14, marginTop: 4 },
-  filterButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    borderWidth: 1,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-
-  // Topic chips
-  topicsRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: Spacing.two,
-    paddingHorizontal: Spacing.four,
-    paddingBottom: Spacing.four,
-  },
-  topicChip: {
-    paddingHorizontal: Spacing.three,
-    paddingVertical: 8,
-    borderRadius: 999,
-  },
-  topicChipInactive: {
-    borderWidth: 1,
-  },
-  topicChipText: { fontSize: 13, fontWeight: "600" },
-
-  emptyCard: { alignItems: "center", justifyContent: "center" },
-  emptyState: { fontSize: 14 },
-
-  // Card — edge to edge, no border/radius, so consecutive pages blend
-  // into one continuous surface instead of showing a frame or seam.
-  card: {
-    overflow: "hidden",
-  },
-  topScrim: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    height: 180,
-  },
-
-  cardContent: {
-    flex: 1,
-    justifyContent: "flex-end",
-    padding: Spacing.five,
-    paddingBottom: Spacing.five + BOTTOM_NAV_SPACE,
-  },
-  cardMeta: { fontSize: 12, fontWeight: "600", letterSpacing: 0.6, marginBottom: Spacing.two },
-  cardTitle: { fontSize: 30, lineHeight: 37, fontWeight: "600", marginBottom: Spacing.three },
-  cardDescription: { fontSize: 15, lineHeight: 22, marginBottom: Spacing.four },
-  swipeHint: { fontSize: 12, marginTop: Spacing.three, opacity: 0.6 },
-
-  expandedBlock: { marginBottom: Spacing.four },
-  expandedLabel: { fontSize: 11, fontWeight: "700", letterSpacing: 0.8, marginBottom: 6 },
-  expandedText: { fontSize: 15, lineHeight: 22 },
-
-  actionRow: { flexDirection: "row", alignItems: "center" },
-
-  whyPill: {
-    alignSelf: "flex-start",
-    paddingHorizontal: Spacing.three,
-    paddingVertical: 10,
-    borderRadius: 999,
-    borderWidth: 1,
-  },
-  whyPillPressed: { opacity: 0.7, transform: [{ scale: 0.96 }] },
-  whyPillText: { fontSize: 14, fontWeight: "600" },
-
-  branchRow: { flexDirection: "row", alignItems: "center", gap: Spacing.two },
-  branchText: { fontSize: 14, fontWeight: "600" },
-  branchDivider: { fontSize: 14 },
-
-  exploreDeeper: { alignSelf: "flex-start", paddingVertical: 6 },
-  exploreDeeperText: { fontSize: 14, fontWeight: "600" },
-
+  container: { flex: 1, overflow: "hidden", backgroundColor: "#05040c" },
   pressedSubtle: { opacity: 0.7 },
 
-  // Connection card
-  connectionLead: { fontSize: 14, marginBottom: Spacing.two },
-  connectionTagsRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: Spacing.two,
-    marginBottom: Spacing.three,
+  // Header
+  headerFloating: { position: "absolute", top: 0, left: 0, right: 0, zIndex: 10 },
+  header: { paddingHorizontal: Spacing.four, paddingBottom: Spacing.three },
+  headerTopRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  brand: { fontSize: 24, fontWeight: "600", color: TEXT },
+  headerSubtitle: { fontSize: 14, marginTop: 4, color: TEXT_DIM },
+  filterButton: {
+    width: 34, height: 34, borderRadius: 17, borderWidth: 1, borderColor: HAIRLINE,
+    alignItems: "center", justifyContent: "center",
   },
-  connectionTag: { fontSize: 24, fontWeight: "600" },
-  connectionPlus: { fontSize: 16 },
+  topicsRow: {
+    flexDirection: "row", flexWrap: "wrap", gap: Spacing.two,
+    paddingHorizontal: Spacing.four, paddingBottom: Spacing.three,
+  },
+  topicChip: { paddingHorizontal: Spacing.three, paddingVertical: 8, borderRadius: 999 },
+  topicChipActive: { backgroundColor: "#FFFFFF" },
+  topicChipInactive: { borderWidth: 1, borderColor: HAIRLINE, backgroundColor: "rgba(0,0,0,0.3)" },
+  topicChipText: { fontSize: 13, fontWeight: "600" },
+
+  // Empty / error
+  emptyCard: { alignItems: "center", justifyContent: "center", paddingHorizontal: Spacing.five },
+  emptyState: { fontSize: 14, color: TEXT_DIM, textAlign: "center" },
+  retryButton: {
+    marginTop: Spacing.three, paddingHorizontal: Spacing.four, paddingVertical: 10,
+    borderRadius: 999, borderWidth: 1, borderColor: HAIRLINE,
+  },
+  retryText: { fontSize: 14, fontWeight: "600", color: TEXT },
+
+  // Card
+  card: { overflow: "hidden" },
+  tapZone: { position: "absolute", top: 0, bottom: 0 },
+  content: {
+    flex: 1,
+    paddingHorizontal: Spacing.five,
+    paddingBottom: BOTTOM_NAV_SPACE,
+  },
+
+  // Meta (label + title) — deliberately quiet so the step text leads
+  metaRow: { flexDirection: "row", alignItems: "center", gap: Spacing.two, marginBottom: 6 },
+  labelChip: { borderWidth: 1, borderRadius: 999, paddingHorizontal: 9, paddingVertical: 4 },
+  labelChipText: { fontSize: 10, fontWeight: "700", letterSpacing: 0.8 },
+  readTime: { fontSize: 11, color: TEXT_FAINT },
+  metaTitle: { fontSize: 12, lineHeight: 16, color: TEXT_FAINT },
+
+  // Stage
+  stage: { flex: 1, justifyContent: "center" },
+  eyebrowRow: { flexDirection: "row", alignItems: "center", marginBottom: Spacing.three },
+  eyebrowGlyph: { fontSize: 14, marginRight: 8 },
+  eyebrowText: { fontSize: 12, fontWeight: "800", letterSpacing: 1.6 },
+  eyebrowCount: { marginLeft: "auto", fontSize: 11, color: TEXT_FAINT, letterSpacing: 0.6 },
+
+  // Hook — the loudest thing in the feed
+  hookLead: { fontSize: 16, lineHeight: 23, color: TEXT_DIM, marginBottom: Spacing.three },
+  hookQuestion: { fontWeight: "700", color: TEXT, letterSpacing: -0.5 },
+
+  tensionWrap: { borderLeftWidth: 3, paddingLeft: Spacing.three },
+  tensionText: { fontWeight: "600", color: TEXT },
+
+  revealRule: { width: 48, height: 4, borderRadius: 2, marginBottom: Spacing.three },
+  revealText: {
+    fontWeight: "700", color: TEXT, letterSpacing: -0.3,
+    textShadowOffset: { width: 0, height: 0 }, textShadowRadius: 18,
+  },
+
+  whyPanel: {
+    backgroundColor: "rgba(0,0,0,0.32)", borderColor: HAIRLINE, borderWidth: 1,
+    borderRadius: 22, padding: Spacing.four,
+  },
+  whyRow: { flexDirection: "row", alignItems: "flex-start" },
+  whyDot: {
+    width: 26, height: 26, borderRadius: 13, borderWidth: 1,
+    alignItems: "center", justifyContent: "center", marginRight: Spacing.three, marginTop: 1,
+  },
+  whyDotText: { fontSize: 12, fontWeight: "700" },
+  whyText: { flex: 1, fontSize: 20, lineHeight: 30, fontWeight: "500", color: TEXT },
+
+  surpriseCard: {
+    borderWidth: 1, borderRadius: 24, padding: Spacing.four, overflow: "hidden",
+    backgroundColor: "rgba(0,0,0,0.3)", transform: [{ rotate: "-1deg" }],
+  },
+  surpriseBang: { position: "absolute", right: 8, top: -44, fontSize: 180, fontWeight: "700" },
+  surpriseText: { fontWeight: "600", color: TEXT },
+
+  nodesRow: { flexDirection: "row", alignItems: "center", marginBottom: Spacing.four },
+  node: { width: 16, height: 16, borderRadius: 8 },
+  nodeLine: { width: 56, height: 2, marginHorizontal: 6, borderRadius: 1 },
+  connectionText: { fontWeight: "500", color: TEXT },
+
+  takeawayCard: { borderWidth: 1, borderRadius: 26, padding: Spacing.four },
+  takeawayText: { fontWeight: "700", color: TEXT, letterSpacing: -0.3 },
+  takeawayFoot: { marginTop: Spacing.three, fontSize: 12, color: TEXT_DIM },
+
+  // Footer
+  footer: { paddingTop: Spacing.three },
+  segRow: { flexDirection: "row", gap: 4 },
+  segTrack: { flex: 1, height: 3, borderRadius: 2, backgroundColor: "rgba(255,255,255,0.18)", overflow: "hidden" },
+  segFill: { height: 3, borderRadius: 2 },
+  hint: { marginTop: Spacing.three, fontSize: 12, color: TEXT_FAINT, letterSpacing: 0.3 },
+
+  curiosityPill: {
+    marginTop: Spacing.three, flexDirection: "row", alignItems: "center",
+    borderWidth: 1, borderRadius: 20, paddingHorizontal: Spacing.three, paddingVertical: Spacing.three,
+    backgroundColor: "rgba(0,0,0,0.35)",
+  },
+  curiosityLabel: { fontSize: 10, fontWeight: "800", letterSpacing: 1.2, marginBottom: 4 },
+  curiosityText: { fontSize: 16, lineHeight: 22, color: TEXT, fontWeight: "600" },
+  curiosityArrow: { fontSize: 22, marginLeft: Spacing.three },
 });

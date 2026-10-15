@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Pressable,
   StyleSheet,
@@ -8,21 +8,69 @@ import {
   ScrollView,
   Animated,
   Dimensions,
+  RefreshControl,
   useColorScheme,
 } from "react-native";
 import { useRouter } from "expo-router";
+import * as Haptics from "expo-haptics";
 
 import { Colors, Fonts, Spacing } from "@/constants/theme";
 import { getHomeContent, type HomeFeedItem } from "@/lib/content";
 import { getUsername } from "@/lib/profile";
-
-const DOUBLE_TAP_DELAY = 300;
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 
 const HERO_WIDTH = SCREEN_WIDTH - Spacing.four * 2;
 const HERO_SPACING = Spacing.two;
 const HERO_ITEM_SIZE = HERO_WIDTH + HERO_SPACING;
+const HERO_COUNT = 5;
+
+/* ------------------------------------------------------------------ */
+/* Debug logging (silent in production builds)                         */
+/* ------------------------------------------------------------------ */
+
+const DEBUG = __DEV__;
+
+function log(scope: string, message: string, data?: unknown) {
+  if (!DEBUG) return;
+  const ts = new Date().toISOString().slice(11, 23);
+  if (data !== undefined) {
+    console.log(`[Home:${scope}] ${ts} ${message}`, data);
+  } else {
+    console.log(`[Home:${scope}] ${ts} ${message}`);
+  }
+}
+
+function warn(scope: string, message: string, data?: unknown) {
+  if (!DEBUG) return;
+  console.warn(`[Home:${scope}] ${message}`, data ?? "");
+}
+
+/** Short, safe preview of a possibly huge payload. */
+function preview(value: unknown, max = 200) {
+  let str: string | undefined;
+
+  try {
+    str = typeof value === "string" ? value : JSON.stringify(value);
+  } catch {
+    str = "[unserializable]";
+  }
+
+  if (!str) return "";
+
+  return str.length > max
+    ? `${str.slice(0, max)}… (+${str.length - max} chars)`
+    : str;
+}
+
+function isValidJson(str: string) {
+  try {
+    JSON.parse(str);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /* ------------------------------------------------------------------ */
 /* Fallback images, grouped by topic / label keywords                  */
@@ -146,8 +194,8 @@ function hashString(str: string) {
 
 /**
  * Picks a fallback image that matches the item's label/topics.
- * Uses a hash of the content id so the same item always gets the
- * same image (in the hero and in the list).
+ * Hashing the content id keeps the same item on the same image
+ * everywhere it appears.
  */
 function pickFallbackImage(id: string, topics: string[], label: string) {
   const words = [label, ...topics]
@@ -177,7 +225,14 @@ function RemoteImage({ uri, style }: { uri: string; style: any }) {
     <Image
       source={{ uri: failed ? DEFAULT_IMAGE : uri }}
       style={style}
-      onError={() => setFailed(true)}
+      accessibilityIgnoresInvertColors
+      onError={(e) => {
+        warn("RemoteImage", "image failed to load, using default", {
+          uri,
+          error: e?.nativeEvent?.error,
+        });
+        setFailed(true);
+      }}
     />
   );
 }
@@ -190,7 +245,7 @@ type HeroCardData = {
   id: string;
   label: string;
   category: string;
-  readTime: string;
+  minutes: number;
   title: string;
   description: string;
   image: string;
@@ -199,7 +254,7 @@ type HeroCardData = {
 type ListItemData = {
   id: string;
   category: string;
-  readTime: string;
+  minutes: number;
   title: string;
   image: string;
 };
@@ -207,16 +262,9 @@ type ListItemData = {
 type Category = {
   key: string;
   label: string;
-  icon: string;
 };
 
-const FOR_YOU: Category = {
-  key: "for-you",
-  label: "For you",
-  icon: "◎",
-};
-
-const CHIP_ICONS = ["◐", "▣", "◈", "✦", "◎"];
+const ALL: Category = { key: "all", label: "All" };
 
 type Theme = typeof Colors.light;
 
@@ -230,7 +278,7 @@ function normalizeLabel(label?: string | null) {
 
 function formatCategory(topics: string[], label: string) {
   if (label) {
-    return label;
+    return toTitleCase(label);
   }
 
   if (topics.length > 0) {
@@ -242,24 +290,76 @@ function formatCategory(topics: string[], label: string) {
   return "Explore";
 }
 
+function formatMinutes(total: number) {
+  if (total < 60) return `${total} min`;
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  return m ? `${h} h ${m} min` : `${h} h`;
+}
+
+function formatToday() {
+  try {
+    return new Date().toLocaleDateString(undefined, {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+    });
+  } catch {
+    return "";
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Components                                                          */
+/* ------------------------------------------------------------------ */
+
+const DOUBLE_TAP_DELAY = 300;
+
 /**
  * Double-tap detector. Returns a stable handler that calls
  * `onDoubleTap` when two presses land within DOUBLE_TAP_DELAY.
  * Always calls the latest `onDoubleTap` (no stale closures).
+ *
+ * `label` is only used for logging.
  */
-function useDoubleTap(onDoubleTap: () => void) {
+function useDoubleTap(onDoubleTap: () => void, label = "unknown") {
   const lastTap = useRef(0);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const callback = useRef(onDoubleTap);
   callback.current = onDoubleTap;
+
+  useEffect(() => {
+    return () => {
+      if (timer.current) clearTimeout(timer.current);
+    };
+  }, []);
 
   return useRef(() => {
     const now = Date.now();
 
-    if (now - lastTap.current < DOUBLE_TAP_DELAY) {
+    if (lastTap.current && now - lastTap.current < DOUBLE_TAP_DELAY) {
+      log("DoubleTap", `✅ double tap on "${label}"`, {
+        deltaMs: now - lastTap.current,
+      });
+
+      if (timer.current) clearTimeout(timer.current);
       lastTap.current = 0;
-      callback.current();
+
+      try {
+        callback.current();
+      } catch (err) {
+        console.error(`[Home:DoubleTap] onDoubleTap threw for "${label}":`, err);
+      }
     } else {
+      log("DoubleTap", `first tap on "${label}", armed`);
       lastTap.current = now;
+
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(() => {
+        if (lastTap.current === now) {
+          lastTap.current = 0;
+        }
+      }, DOUBLE_TAP_DELAY + 50);
     }
   }).current;
 }
@@ -268,6 +368,7 @@ function Avatar({ theme, name }: { theme: Theme; name: string }) {
   return (
     <View
       style={[styles.avatar, { backgroundColor: theme.onboardingBorder }]}
+      accessibilityLabel={name ? `Profile, ${name}` : "Profile"}
     >
       <Text style={[styles.avatarText, { color: theme.text }]}>
         {name.charAt(0).toUpperCase()}
@@ -279,10 +380,10 @@ function Avatar({ theme, name }: { theme: Theme; name: string }) {
 /**
  * A single hero card.
  *
- * The Pressable is the OUTER element (untransformed) so touches
- * keep working while the inner Animated.View is rotated in 3D.
- * Hit-testing on rotated views is unreliable, which is what broke
- * double tap before.
+ * The Pressable is the OUTER element (untransformed) so touches stay
+ * reliable while the inner Animated.View tilts slightly. The motion is
+ * deliberately small: neighbours recede a little (scale, fade, a hint
+ * of tilt) so the centred card reads as "the one to read now".
  */
 function HeroCard({
   item,
@@ -299,7 +400,7 @@ function HeroCard({
   read: boolean;
   onOpen: () => void;
 }) {
-  const handleTap = useDoubleTap(onOpen);
+  const handleTap = useDoubleTap(onOpen, `hero:${item.id}`);
 
   const inputRange = [
     (index - 1) * HERO_ITEM_SIZE,
@@ -309,30 +410,35 @@ function HeroCard({
 
   const rotateY = scrollX.interpolate({
     inputRange,
-    outputRange: ["55deg", "0deg", "-55deg"],
+    outputRange: ["10deg", "0deg", "-10deg"],
     extrapolate: "clamp",
   });
 
   const scale = scrollX.interpolate({
     inputRange,
-    outputRange: [0.86, 1, 0.86],
+    outputRange: [0.95, 1, 0.95],
     extrapolate: "clamp",
   });
 
   const opacity = scrollX.interpolate({
     inputRange,
-    outputRange: [0.5, 1, 0.5],
-    extrapolate: "clamp",
-  });
-
-  const translateY = scrollX.interpolate({
-    inputRange,
-    outputRange: [10, 0, 10],
+    outputRange: [0.65, 1, 0.65],
     extrapolate: "clamp",
   });
 
   return (
-    <Pressable onPress={handleTap} style={styles.heroCardWrap}>
+    <Pressable
+      onPress={() => {
+        log("HeroCard", `onPress index=${index}`, { id: item.id });
+        handleTap();
+      }}
+      accessibilityRole="button"
+      accessibilityLabel={`${item.title}. ${item.category}, ${item.minutes} minute read.${read ? " Already read." : ""}`}
+      accessibilityHint="Double tap to open"
+      accessibilityActions={[{ name: "activate", label: "Open" }]}
+      onAccessibilityAction={onOpen}
+      style={styles.heroCardWrap}
+    >
       {({ pressed }) => (
         <Animated.View
           style={[
@@ -341,54 +447,67 @@ function HeroCard({
               backgroundColor: theme.background,
               borderColor: theme.onboardingBorder,
               opacity,
-              transform: [
-                { perspective: 900 },
-                { scale },
-                { translateY },
-                { rotateY },
-              ],
+              transform: [{ perspective: 900 }, { scale }, { rotateY }],
             },
             pressed && styles.pressed,
           ]}
         >
-          <RemoteImage uri={item.image} style={styles.heroImage} />
+          <View style={styles.heroImageWrap}>
+            <RemoteImage uri={item.image} style={styles.heroImage} />
 
-          <View
-            style={[
-              styles.heroLabelPill,
-              { backgroundColor: theme.onboardingAccent },
-            ]}
-          >
-            <Text style={[styles.heroLabelText, { color: theme.background }]}>
-              {item.label}
-            </Text>
+            <View
+              style={[
+                styles.heroLabelPill,
+                { backgroundColor: theme.onboardingAccent },
+              ]}
+            >
+              <Text
+                style={[styles.heroLabelText, { color: theme.background }]}
+              >
+                {item.label}
+              </Text>
+            </View>
           </View>
-
-          <Text style={[styles.heroMeta, { color: theme.textSecondary }]}>
-            {item.category} · {item.readTime}
-            {read ? " · Read" : ""}
-          </Text>
 
           <Text
             style={[
               styles.heroTitle,
               { color: theme.text, fontFamily: Fonts.serif },
             ]}
+            numberOfLines={3}
           >
             {item.title}
           </Text>
 
           <Text
             style={[styles.heroDescription, { color: theme.textSecondary }]}
+            numberOfLines={3}
           >
             {item.description}
           </Text>
 
-          <View
-            style={[styles.tapPill, { borderColor: theme.onboardingBorder }]}
-          >
-            <Text style={[styles.tapPillText, { color: theme.textSecondary }]}>
-              ⇢⇢  double tap to open
+          <View style={styles.heroFooterRow}>
+            {read ? (
+              <Text style={[styles.readBadge, { color: theme.textSecondary }]}>
+                ✓ Read
+              </Text>
+            ) : (
+              <View
+                style={[
+                  styles.tapPill,
+                  { borderColor: theme.onboardingBorder },
+                ]}
+              >
+                <Text
+                  style={[styles.tapPillText, { color: theme.textSecondary }]}
+                >
+                  ⇢⇢  double tap to open
+                </Text>
+              </View>
+            )}
+
+            <Text style={[styles.heroMeta, { color: theme.textSecondary }]}>
+              {item.category} · {item.minutes} min
             </Text>
           </View>
         </Animated.View>
@@ -413,18 +532,7 @@ function HeroStack({
 
   const handleScroll = Animated.event(
     [{ nativeEvent: { contentOffset: { x: scrollX } } }],
-    {
-      useNativeDriver: true,
-      listener: (e: any) => {
-        const index = Math.round(
-          e.nativeEvent.contentOffset.x / HERO_ITEM_SIZE,
-        );
-
-        if (index !== activeIndex) {
-          setActiveIndex(index);
-        }
-      },
-    },
+    { useNativeDriver: true },
   );
 
   if (cards.length === 0) {
@@ -444,6 +552,12 @@ function HeroStack({
         contentContainerStyle={{ paddingHorizontal: Spacing.four }}
         onScroll={handleScroll}
         scrollEventThrottle={16}
+        onMomentumScrollEnd={(e) => {
+          const index = Math.round(
+            e.nativeEvent.contentOffset.x / HERO_ITEM_SIZE,
+          );
+          setActiveIndex(Math.max(0, Math.min(index, cards.length - 1)));
+        }}
         extraData={readIds}
         renderItem={({ item, index }) => (
           <HeroCard
@@ -457,29 +571,80 @@ function HeroStack({
         )}
       />
 
-      <View style={styles.heroFooter}>
-        <View style={styles.dotsRow}>
-          {cards.map((_, i) => (
-            <View
-              key={i}
-              style={[
-                styles.dot,
-                {
-                  backgroundColor:
-                    i === activeIndex
-                      ? theme.onboardingAccent
-                      : theme.onboardingBorder,
-                  width: i === activeIndex ? 16 : 6,
-                },
-              ]}
-            />
-          ))}
-        </View>
+      <View style={styles.dotsRow}>
+        {cards.map((c, i) => (
+          <View
+            key={c.id}
+            style={[
+              styles.dot,
+              {
+                backgroundColor:
+                  i === activeIndex
+                    ? theme.onboardingAccent
+                    : theme.onboardingBorder,
+                width: i === activeIndex ? 16 : 6,
+              },
+            ]}
+          />
+        ))}
+      </View>
+    </View>
+  );
+}
 
-        <Text style={[styles.pageFraction, { color: theme.textSecondary }]}>
-          {activeIndex + 1} / {cards.length}
+/** Today's progress: one quiet segment per pick, filled once read. */
+function TodayProgress({
+  theme,
+  cards,
+  readIds,
+  totalMinutes,
+}: {
+  theme: Theme;
+  cards: HeroCardData[];
+  readIds: Set<string>;
+  totalMinutes: number;
+}) {
+  const readCount = cards.filter((c) => readIds.has(c.id)).length;
+  const done = readCount === cards.length && cards.length > 0;
+
+  return (
+    <View style={styles.todayWrap}>
+      <View style={styles.todayTextRow}>
+        <Text
+          style={[
+            styles.todayTitle,
+            { color: theme.text, fontFamily: Fonts.serif },
+          ]}
+        >
+          Worth your time today
+        </Text>
+
+        <Text style={[styles.todayCount, { color: theme.textSecondary }]}>
+          {done ? "All read" : `${readCount} of ${cards.length} read`}
         </Text>
       </View>
+
+      <View style={styles.segRow}>
+        {cards.map((c) => (
+          <View
+            key={c.id}
+            style={[
+              styles.seg,
+              {
+                backgroundColor: readIds.has(c.id)
+                  ? theme.onboardingAccent
+                  : theme.onboardingBorder,
+              },
+            ]}
+          />
+        ))}
+      </View>
+
+      <Text style={[styles.todayHint, { color: theme.textSecondary }]}>
+        {done
+          ? "You're caught up. Come back tomorrow."
+          : `${cards.length} ideas · about ${formatMinutes(totalMinutes)}`}
+      </Text>
     </View>
   );
 }
@@ -507,25 +672,26 @@ function CategoryChips({
         return (
           <Pressable
             key={cat.key}
-            onPress={() => onSelect(cat.key)}
+            onPress={() => {
+              if (isActive) return;
+              log("Chips", `chip selected: ${cat.key}`, { previous: active });
+              Haptics.selectionAsync().catch(() => {});
+              onSelect(cat.key);
+            }}
+            accessibilityRole="button"
+            accessibilityState={{ selected: isActive }}
             style={[
               styles.chip,
               {
                 backgroundColor: isActive
                   ? theme.onboardingAccent
+                  : "transparent",
+                borderColor: isActive
+                  ? theme.onboardingAccent
                   : theme.onboardingBorder,
               },
             ]}
           >
-            <Text
-              style={{
-                color: isActive ? theme.background : theme.text,
-                fontSize: 13,
-              }}
-            >
-              {cat.icon}
-            </Text>
-
             <Text
               style={[
                 styles.chipText,
@@ -552,13 +718,22 @@ function ListRow({
   read: boolean;
   onOpen: () => void;
 }) {
-  const handleTap = useDoubleTap(onOpen);
+  const handleTap = useDoubleTap(onOpen, `list:${item.id}`);
 
   return (
     <Pressable
-      onPress={handleTap}
+      onPress={() => {
+        log("ListRow", "onPress", { id: item.id, title: item.title });
+        handleTap();
+      }}
+      accessibilityHint="Double tap to open"
+      accessibilityActions={[{ name: "activate", label: "Open" }]}
+      onAccessibilityAction={onOpen}
+      accessibilityRole="button"
+      accessibilityLabel={`${item.title}. ${item.category}, ${item.minutes} minute read.${read ? " Already read." : ""}`}
       style={({ pressed }) => [
         styles.listRow,
+        { borderBottomColor: theme.onboardingBorder },
         pressed && styles.pressed,
         read && styles.readRow,
       ]}
@@ -567,8 +742,7 @@ function ListRow({
 
       <View style={styles.listText}>
         <Text style={[styles.listMeta, { color: theme.textSecondary }]}>
-          {item.category} · {item.readTime}
-          {read ? " · Read" : ""}
+          {item.category} · {item.minutes} min{read ? " · ✓ Read" : ""}
         </Text>
 
         <Text
@@ -582,14 +756,76 @@ function ListRow({
         </Text>
       </View>
 
-      <View
-        style={[styles.arrowCircle, { backgroundColor: theme.onboardingBorder }]}
-      >
-        <Text style={[styles.arrowText, { color: theme.text }]}>›</Text>
-      </View>
+      <Text style={[styles.chevron, { color: theme.textSecondary }]}>›</Text>
     </Pressable>
   );
 }
+
+/** Static placeholders (no shimmer) so the layout doesn't jump on load. */
+function FeedSkeleton({ theme }: { theme: Theme }) {
+  const block = { backgroundColor: theme.onboardingBorder };
+
+  return (
+    <View accessibilityLabel="Loading your feed">
+      <View style={[styles.skelHero, block]} />
+
+      <View style={styles.list}>
+        {[0, 1, 2].map((i) => (
+          <View
+            key={i}
+            style={[styles.listRow, { borderBottomColor: "transparent" }]}
+          >
+            <View style={[styles.listThumb, block]} />
+            <View style={styles.listText}>
+              <View style={[styles.skelLineShort, block]} />
+              <View style={[styles.skelLine, block]} />
+            </View>
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+}
+
+function StatusMessage({
+  theme,
+  message,
+  actionLabel,
+  onAction,
+}: {
+  theme: Theme;
+  message: string;
+  actionLabel?: string;
+  onAction?: () => void;
+}) {
+  return (
+    <View style={styles.statusContainer}>
+      <Text style={[styles.statusText, { color: theme.textSecondary }]}>
+        {message}
+      </Text>
+
+      {actionLabel && onAction ? (
+        <Pressable
+          onPress={onAction}
+          accessibilityRole="button"
+          style={({ pressed }) => [
+            styles.retryButton,
+            { borderColor: theme.onboardingBorder },
+            pressed && styles.pressed,
+          ]}
+        >
+          <Text style={[styles.retryText, { color: theme.text }]}>
+            {actionLabel}
+          </Text>
+        </Pressable>
+      ) : null}
+    </View>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Screen                                                              */
+/* ------------------------------------------------------------------ */
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -599,11 +835,14 @@ export default function HomeScreen() {
   const [username, setUsername] = useState<string | null>(null);
   const [checkedProfile, setCheckedProfile] = useState(false);
 
-  const [activeCategory, setActiveCategory] = useState(FOR_YOU.key);
+  const [activeCategory, setActiveCategory] = useState(ALL.key);
   const [readIds, setReadIds] = useState<Set<string>>(new Set());
   const [content, setContent] = useState<HomeFeedItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const mountedRef = useRef(true);
 
   const hour = new Date().getHours();
 
@@ -614,6 +853,18 @@ export default function HomeScreen() {
         ? "Good afternoon"
         : "Good evening";
 
+  const today = useMemo(formatToday, []);
+
+  // Mount / unmount
+  useEffect(() => {
+    mountedRef.current = true;
+    log("Screen", "HomeScreen mounted");
+    return () => {
+      mountedRef.current = false;
+      log("Screen", "HomeScreen unmounted");
+    };
+  }, []);
+
   // Load the username; send new users to onboarding.
   useEffect(() => {
     let active = true;
@@ -623,10 +874,12 @@ export default function HomeScreen() {
         if (!active) return;
 
         if (!name) {
+          log("Profile", "no username → redirecting to onboarding");
           router.replace("/(onboarding)/username");
           return;
         }
 
+        log("Profile", "username loaded", { name });
         setUsername(name);
         setCheckedProfile(true);
       })
@@ -644,45 +897,49 @@ export default function HomeScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Load the feed.
-  useEffect(() => {
-    let mounted = true;
+  // Load the feed. `refresh` keeps the current content on screen while
+  // the new feed loads instead of flashing a skeleton.
+  const loadFeed = useCallback(async (mode: "initial" | "refresh") => {
+    try {
+      if (mode === "initial") setLoading(true);
+      else setRefreshing(true);
+      setError(null);
 
-    async function loadHome() {
-      try {
-        setLoading(true);
-        setError(null);
+      log("Feed", `loading feed (${mode}, limit=20, offset=0)…`);
+      const items = await getHomeContent(20, 0);
 
-        const items = await getHomeContent(20, 0);
+      log("Feed", `loaded ${items.length} items`, {
+        ids: items.map((i) => i.content_id),
+        withoutPayload: items.filter((i) => i.payload == null).length,
+        payloadTypes: items.map((i) => typeof i.payload),
+      });
 
-        if (mounted) {
-          setContent(items);
-        }
-      } catch (err) {
-        console.error("HOME FEED ERROR:", err);
+      if (mountedRef.current) {
+        setContent(items);
+      }
+    } catch (err) {
+      console.error("HOME FEED ERROR:", err);
 
-        if (mounted) {
-          setError("Unable to load your feed.");
-        }
-      } finally {
-        if (mounted) {
-          setLoading(false);
-        }
+      if (mountedRef.current) {
+        setError("Couldn't load your feed. Check your connection and try again.");
+      }
+    } finally {
+      if (mountedRef.current) {
+        setLoading(false);
+        setRefreshing(false);
       }
     }
-
-    loadHome();
-
-    return () => {
-      mounted = false;
-    };
   }, []);
 
-  // Chips are built from the labels that actually exist in the content.
+  useEffect(() => {
+    loadFeed("initial");
+  }, [loadFeed]);
+
+  // Chips are built from the labels that actually exist in the list below.
   const categories = useMemo<Category[]>(() => {
     const seen = new Map<string, string>();
 
-    content.forEach((item) => {
+    content.slice(HERO_COUNT).forEach((item) => {
       const key = normalizeLabel(item.label);
 
       if (key && !seen.has(key)) {
@@ -691,23 +948,29 @@ export default function HomeScreen() {
     });
 
     return [
-      FOR_YOU,
-      ...Array.from(seen, ([key, label], i) => ({
+      ALL,
+      ...Array.from(seen, ([key, label]) => ({
         key,
         label: toTitleCase(label),
-        icon: CHIP_ICONS[i % CHIP_ICONS.length],
       })),
     ];
   }, [content]);
 
-  // Hero carousel: always the top 5 items.
-  const heroItems = useMemo(() => content.slice(0, 5), [content]);
+  // If a refresh removes the selected label, fall back to "All".
+  useEffect(() => {
+    if (!categories.some((c) => c.key === activeCategory)) {
+      setActiveCategory(ALL.key);
+    }
+  }, [categories, activeCategory]);
+
+  // Hero carousel: always the top picks for today.
+  const heroItems = useMemo(() => content.slice(0, HERO_COUNT), [content]);
 
   // List below: the rest, filtered by the selected label chip.
   const listSource = useMemo(() => {
-    const rest = content.slice(5);
+    const rest = content.slice(HERO_COUNT);
 
-    if (activeCategory === FOR_YOU.key) {
+    if (activeCategory === ALL.key) {
       return rest;
     }
 
@@ -718,9 +981,9 @@ export default function HomeScreen() {
 
   const heroCards: HeroCardData[] = heroItems.map((item) => ({
     id: item.content_id,
-    label: item.label || "TODAY'S IDEA",
+    label: item.label || "Today's idea",
     category: formatCategory(item.topics, item.label),
-    readTime: `${item.estimated_minutes} min`,
+    minutes: item.estimated_minutes ?? 1,
     title: item.title,
     description: item.summary,
     image: pickFallbackImage(item.content_id, item.topics, item.label),
@@ -729,19 +992,96 @@ export default function HomeScreen() {
   const listItems: ListItemData[] = listSource.map((item) => ({
     id: item.content_id,
     category: formatCategory(item.topics, item.label),
-    readTime: `${item.estimated_minutes} min`,
+    minutes: item.estimated_minutes ?? 1,
     title: item.title,
     image: pickFallbackImage(item.content_id, item.topics, item.label),
   }));
 
+  const totalMinutes = heroCards.reduce((sum, c) => sum + c.minutes, 0);
+
+  const activeCategoryLabel =
+    categories.find((c) => c.key === activeCategory)?.label ?? ALL.label;
+
   const openContent = (id: string) => {
-    setReadIds((prev) => new Set(prev).add(id));
+    log("Open", "openContent called", { id, feedSize: content.length });
 
-    console.log("Open topic:", id);
+    const selectedItem = content.find((item) => item.content_id === id);
 
-    // TODO:
-    // Navigate to the real content detail screen, e.g.
-    // router.push({ pathname: "/content/[id]", params: { id } });
+    if (!selectedItem) {
+      warn("Open", "❌ content NOT FOUND for id. Aborting navigation.", {
+        id,
+        availableIds: content.map((c) => c.content_id),
+      });
+      return;
+    }
+
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+
+    setReadIds((prev) => {
+      const next = new Set(prev);
+      next.add(id);
+      return next;
+    });
+
+    // Build the payload string
+    const rawPayload = selectedItem.payload;
+    const payloadString =
+      typeof rawPayload === "string"
+        ? rawPayload
+        : JSON.stringify(rawPayload ?? {});
+
+    if (rawPayload == null) {
+      warn("Open", "payload is null/undefined, falling back to '{}'", { id });
+    }
+
+    const payloadIsValidJson = isValidJson(payloadString);
+
+    log("Open", "payload serialized", {
+      originalType: typeof rawPayload,
+      length: payloadString.length,
+      validJson: payloadIsValidJson,
+      preview: preview(payloadString),
+    });
+
+    if (!payloadIsValidJson) {
+      warn(
+        "Open",
+        "⚠️ payload is NOT valid JSON, the detail screen may fail to parse it",
+        { id, preview: preview(payloadString, 300) },
+      );
+    }
+
+    // Route params have practical size limits on some platforms
+    if (payloadString.length > 20_000) {
+      warn("Open", "⚠️ payload is very large for a route param (>20k chars)", {
+        id,
+        length: payloadString.length,
+      });
+    }
+
+    const params = {
+      id: selectedItem.content_id,
+      title: selectedItem.title,
+      label: selectedItem.label ?? "",
+      summary: selectedItem.summary ?? "",
+      readTime: String(selectedItem.estimated_minutes ?? 1),
+      topics: JSON.stringify(selectedItem.topics ?? []),
+      payload: payloadString,
+    };
+
+    log("Open", "➡️ router.push /deep-dive/[id]", {
+      pathname: "/deep-dive/[id]",
+      params: { ...params, payload: preview(params.payload, 120) },
+    });
+
+    try {
+      router.push({
+        pathname: "/deep-dive/[id]",
+        params,
+      });
+    } catch (err) {
+      console.error("[Home:Open] ❌ router.push threw:", err, { id });
+    }
   };
 
   // Avoid flashing the feed before a possible onboarding redirect.
@@ -755,6 +1095,13 @@ export default function HomeScreen() {
       style={[styles.container, { backgroundColor: theme.background }]}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={() => loadFeed("refresh")}
+          tintColor={theme.textSecondary}
+        />
+      }
     >
       {/* Header */}
 
@@ -782,32 +1129,37 @@ export default function HomeScreen() {
           {username ? `, ${username}` : ""}
         </Text>
 
-        <Text style={[styles.subtitle, { color: theme.textSecondary }]}>
-          Small ideas. Big shifts.
-        </Text>
+        {today ? (
+          <Text style={[styles.subtitle, { color: theme.textSecondary }]}>
+            {today}
+          </Text>
+        ) : null}
       </View>
 
       {loading ? (
-        <View style={styles.statusContainer}>
-          <Text style={[styles.statusText, { color: theme.textSecondary }]}>
-            Finding something worth knowing...
-          </Text>
-        </View>
-      ) : error ? (
-        <View style={styles.statusContainer}>
-          <Text style={[styles.statusText, { color: theme.textSecondary }]}>
-            {error}
-          </Text>
-        </View>
+        <FeedSkeleton theme={theme} />
+      ) : error && content.length === 0 ? (
+        <StatusMessage
+          theme={theme}
+          message={error}
+          actionLabel="Try again"
+          onAction={() => loadFeed("initial")}
+        />
       ) : content.length === 0 ? (
-        <View style={styles.statusContainer}>
-          <Text style={[styles.statusText, { color: theme.textSecondary }]}>
-            Nothing new yet.
-          </Text>
-        </View>
+        <StatusMessage
+          theme={theme}
+          message="Nothing new yet. Pull down to refresh."
+        />
       ) : (
         <>
-          {/* Hero stack */}
+          {/* Today's picks */}
+
+          <TodayProgress
+            theme={theme}
+            cards={heroCards}
+            readIds={readIds}
+            totalMinutes={totalMinutes}
+          />
 
           <HeroStack
             theme={theme}
@@ -816,65 +1168,65 @@ export default function HomeScreen() {
             onOpen={openContent}
           />
 
-          {/* Category chips (from content labels) */}
+          {/* More to explore */}
 
-          <CategoryChips
-            theme={theme}
-            categories={categories}
-            active={activeCategory}
-            onSelect={setActiveCategory}
-          />
+          {listSource.length > 0 || activeCategory !== ALL.key ? (
+            <>
+              <View style={styles.sectionHeader}>
+                <Text
+                  style={[
+                    styles.sectionTitle,
+                    { color: theme.text, fontFamily: Fonts.serif },
+                  ]}
+                >
+                  {activeCategory === ALL.key
+                    ? "More to explore"
+                    : activeCategoryLabel}
+                </Text>
 
-          {/* More for you */}
+                <Text
+                  style={[styles.sectionCount, { color: theme.textSecondary }]}
+                >
+                  {listItems.length} {listItems.length === 1 ? "idea" : "ideas"}
+                </Text>
+              </View>
 
-          <View style={styles.sectionHeader}>
-            <Text style={[styles.sectionIcon, { color: theme.onboardingAccent }]}>
-              ✦
-            </Text>
-
-            <View>
-              <Text
-                style={[
-                  styles.sectionTitle,
-                  { color: theme.text, fontFamily: Fonts.serif },
-                ]}
-              >
-                More for you
-              </Text>
-
-              <Text
-                style={[styles.sectionSubtitle, { color: theme.textSecondary }]}
-              >
-                Based on your reading
-              </Text>
-            </View>
-          </View>
-
-          <View style={styles.list}>
-            {listItems.length === 0 ? (
-              <Text
-                style={[
-                  styles.statusText,
-                  {
-                    color: theme.textSecondary,
-                    paddingVertical: Spacing.three,
-                  },
-                ]}
-              >
-                Nothing here yet.
-              </Text>
-            ) : (
-              listItems.map((item) => (
-                <ListRow
-                  key={item.id}
-                  item={item}
+              {categories.length > 2 ? (
+                <CategoryChips
                   theme={theme}
-                  read={readIds.has(item.id)}
-                  onOpen={() => openContent(item.id)}
+                  categories={categories}
+                  active={activeCategory}
+                  onSelect={setActiveCategory}
                 />
-              ))
-            )}
-          </View>
+              ) : null}
+
+              <View style={styles.list}>
+                {listItems.length === 0 ? (
+                  <Text
+                    style={[
+                      styles.statusText,
+                      {
+                        color: theme.textSecondary,
+                        paddingVertical: Spacing.three,
+                      },
+                    ]}
+                  >
+                    Nothing here yet.
+                  </Text>
+                ) : (
+                  listItems.map((item) => (
+                    <ListRow
+                      key={item.id}
+                      item={item}
+                      theme={theme}
+                      read={readIds.has(item.id)}
+                      onOpen={() => openContent(item.id)}
+                    />
+                  ))
+                )}
+              </View>
+            </>
+          ) : null}
         </>
       )}
     </ScrollView>
@@ -890,6 +1242,12 @@ const styles = StyleSheet.create({
     paddingBottom: Spacing.six,
   },
 
+  pressed: {
+    opacity: 0.85,
+  },
+
+  // Status
+
   statusContainer: {
     paddingHorizontal: Spacing.four,
     paddingVertical: Spacing.six,
@@ -898,7 +1256,49 @@ const styles = StyleSheet.create({
 
   statusText: {
     fontSize: 14,
+    lineHeight: 20,
+    textAlign: "center",
   },
+
+  retryButton: {
+    marginTop: Spacing.three,
+    paddingHorizontal: Spacing.four,
+    paddingVertical: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+
+  retryText: {
+    fontSize: 14,
+    fontWeight: "600",
+  },
+
+  // Skeleton
+
+  skelHero: {
+    height: 330,
+    marginHorizontal: Spacing.four,
+    marginBottom: Spacing.five,
+    borderRadius: 22,
+    opacity: 0.5,
+  },
+
+  skelLineShort: {
+    width: "40%",
+    height: 10,
+    borderRadius: 5,
+    marginBottom: 10,
+    opacity: 0.5,
+  },
+
+  skelLine: {
+    width: "85%",
+    height: 14,
+    borderRadius: 7,
+    opacity: 0.5,
+  },
+
+  // Header
 
   header: {
     paddingHorizontal: Spacing.four,
@@ -933,12 +1333,53 @@ const styles = StyleSheet.create({
 
   greeting: {
     fontSize: 28,
+    lineHeight: 34,
     fontWeight: "600",
   },
 
   subtitle: {
     fontSize: 14,
     marginTop: 4,
+  },
+
+  // Today's progress
+
+  todayWrap: {
+    paddingHorizontal: Spacing.four,
+    marginBottom: Spacing.three,
+  },
+
+  todayTextRow: {
+    flexDirection: "row",
+    alignItems: "baseline",
+    justifyContent: "space-between",
+    marginBottom: Spacing.two,
+  },
+
+  todayTitle: {
+    fontSize: 18,
+    fontWeight: "600",
+  },
+
+  todayCount: {
+    fontSize: 12,
+    fontWeight: "500",
+  },
+
+  segRow: {
+    flexDirection: "row",
+    gap: 4,
+  },
+
+  seg: {
+    flex: 1,
+    height: 3,
+    borderRadius: 2,
+  },
+
+  todayHint: {
+    fontSize: 12,
+    marginTop: Spacing.two,
   },
 
   // Hero
@@ -956,38 +1397,30 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     borderWidth: 1,
     padding: Spacing.four,
-    backfaceVisibility: "hidden",
   },
 
-  pressed: {
-    opacity: 0.85,
+  heroImageWrap: {
+    marginBottom: Spacing.three,
   },
 
   heroImage: {
     width: "100%",
     height: 150,
     borderRadius: 16,
-    marginBottom: Spacing.three,
   },
 
   heroLabelPill: {
     position: "absolute",
-    top: Spacing.four + 10,
-    left: Spacing.four + 10,
+    top: 10,
+    left: 10,
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 999,
   },
 
   heroLabelText: {
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: "700",
-    letterSpacing: 0.6,
-  },
-
-  heroMeta: {
-    fontSize: 12,
-    marginBottom: 6,
   },
 
   heroTitle: {
@@ -1003,6 +1436,16 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.three,
   },
 
+  heroFooterRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+
+  heroMeta: {
+    fontSize: 12,
+  },
+
   tapPill: {
     alignSelf: "flex-start",
     paddingHorizontal: 12,
@@ -1016,18 +1459,17 @@ const styles = StyleSheet.create({
     fontWeight: "500",
   },
 
-  heroFooter: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginTop: Spacing.three,
-    paddingHorizontal: Spacing.four,
+  readBadge: {
+    fontSize: 12,
+    fontWeight: "500",
   },
 
   dotsRow: {
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "center",
     gap: 5,
+    marginTop: Spacing.three,
   },
 
   dot: {
@@ -1035,45 +1477,14 @@ const styles = StyleSheet.create({
     borderRadius: 3,
   },
 
-  pageFraction: {
-    fontSize: 12,
-    fontWeight: "500",
-  },
-
-  // Chips
-
-  chipRow: {
-    paddingHorizontal: Spacing.four,
-    gap: Spacing.two,
-    paddingBottom: Spacing.five,
-  },
-
-  chip: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingHorizontal: Spacing.three,
-    paddingVertical: 9,
-    borderRadius: 999,
-  },
-
-  chipText: {
-    fontSize: 13,
-    fontWeight: "600",
-  },
-
   // Section header
 
   sectionHeader: {
     flexDirection: "row",
-    alignItems: "center",
-    gap: Spacing.two,
+    alignItems: "baseline",
+    justifyContent: "space-between",
     paddingHorizontal: Spacing.four,
     marginBottom: Spacing.three,
-  },
-
-  sectionIcon: {
-    fontSize: 16,
   },
 
   sectionTitle: {
@@ -1081,9 +1492,28 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
 
-  sectionSubtitle: {
+  sectionCount: {
     fontSize: 12,
-    marginTop: 1,
+  },
+
+  // Chips
+
+  chipRow: {
+    paddingHorizontal: Spacing.four,
+    gap: Spacing.two,
+    paddingBottom: Spacing.three,
+  },
+
+  chip: {
+    paddingHorizontal: Spacing.three,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+
+  chipText: {
+    fontSize: 13,
+    fontWeight: "600",
   },
 
   // List
@@ -1097,10 +1527,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: Spacing.three,
     paddingVertical: Spacing.three,
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
 
   readRow: {
-    opacity: 0.55,
+    opacity: 0.6,
   },
 
   listThumb: {
@@ -1124,17 +1555,8 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
 
-  arrowCircle: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-
-  arrowText: {
-    fontSize: 18,
-    fontWeight: "600",
-    marginTop: -1,
+  chevron: {
+    fontSize: 22,
+    marginTop: -2,
   },
 });

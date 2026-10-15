@@ -11,6 +11,8 @@ export type HomeFeedItem = {
   estimated_minutes: number;
   topics: string[];
   published_at: string | null;
+
+  payload?: unknown;
 };
 
 export type HomeFeedResponse = {

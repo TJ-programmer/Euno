@@ -183,6 +183,7 @@ class ContentRepository:
                 "label,"
                 "display_title,"
                 "display_summary,"
+                "payload,"
                 "surface"
                 ")"
             )
@@ -213,6 +214,7 @@ class ContentRepository:
             if not presentations:
                 continue
 
+            # Only the Home presentation is returned by this query.
             presentation = presentations[0]
 
             items.append(
@@ -222,6 +224,7 @@ class ContentRepository:
                     "label": presentation["label"],
                     "title": presentation["display_title"],
                     "summary": presentation["display_summary"],
+                    "payload": presentation.get("payload"),
                     "content_type": row["content_type"],
                     "difficulty": row["difficulty"],
                     "estimated_minutes": row[
@@ -229,6 +232,76 @@ class ContentRepository:
                     ],
                     "topics": body.get("topics", []),
                     "published_at": row["published_at"],
+                }
+            )
+
+        return items
+
+    # ------------------------------------------------------------------
+    # FLOW FEED
+    # ------------------------------------------------------------------
+
+    def get_flow_feed(
+        self,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> list[dict]:
+
+        result = (
+            supabase
+            .table("content_items")
+            .select(
+                "id,"
+                "slug,"
+                "content_type,"
+                "title,"
+                "body,"
+                "difficulty,"
+                "estimated_minutes,"
+                "published_at,"
+                "content_presentations!inner("
+                "surface,"
+                "payload"
+                ")"
+            )
+            .eq("content_presentations.surface", "flow")
+            .order("published_at", desc=True)
+            .range(offset, offset + limit - 1)
+            .execute()
+        )
+
+        items: list[dict] = []
+
+        for row in result.data or []:
+            presentations = row.get("content_presentations") or []
+
+            if not presentations:
+                continue
+
+            presentation = presentations[0]
+            payload = presentation.get("payload")
+
+            if not payload:
+                continue
+
+            # The API exposes the database UUID, not the internal
+            # canonical content ID stored in the presentation payload.
+            flow = {
+                **payload,
+                "content_id": row["id"],
+            }
+
+            items.append(
+                {
+                    "content_id": row["id"],
+                    "slug": row["slug"],
+                    "title": row["title"],
+                    "content_type": row["content_type"],
+                    "difficulty": row["difficulty"],
+                    "estimated_minutes": row["estimated_minutes"],
+                    "topics": (row.get("body") or {}).get("topics", []),
+                    "published_at": row["published_at"],
+                    "flow": flow,
                 }
             )
 

@@ -12,6 +12,7 @@ class ContentFeed:
 
     Responsibilities:
     - Retrieve paginated Home feed items.
+    - Retrieve paginated Flow feed items.
 
     Not responsible for:
     - Database queries.
@@ -37,6 +38,21 @@ class ContentFeed:
     ) -> list[dict]:
 
         return self.repository.get_home_feed(
+            limit=limit,
+            offset=offset,
+        )
+
+    # ------------------------------------------------------------------
+    # FLOW FEED
+    # ------------------------------------------------------------------
+
+    def get_flow_feed(
+        self,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> list[dict]:
+
+        return self.repository.get_flow_feed(
             limit=limit,
             offset=offset,
         )
